@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "domains": [
+    {
+      "domain": "material",
+      "catalog": "material_nodes.json",
+      "status": "active",
+      "notes": "Stable AI-facing catalog for commonly used Unreal Material expression nodes."
+    },
+    {
+      "domain": "niagara",
+      "catalog": "niagara_modules.semantic.json",
+      "status": "active",
+      "notes": "Stable semantic catalog for common/native Niagara modules. Updates must follow references/catalog_governance.md."
+    },
+    {
+      "domain": "blueprint",
+      "catalog": "blueprint_nodes.json",
+      "status": "planned",
+      "notes": "Blueprint catalog should focus on callable actions, events, flow-control nodes, and reflected function signatures."
+    }
+  ]
+}

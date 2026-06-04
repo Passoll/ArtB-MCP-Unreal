@@ -1,0 +1,696 @@
+{
+  "schema_version": 2,
+  "domain": "niagara",
+  "catalog": "modules_semantic",
+  "engine_version": "5.7+",
+  "description": "Cached AI-facing semantics for common Niagara modules. This catalog complements live schema/topology/data exports; it is not a substitute for listing actual module inputs after adding a module.",
+  "entry_schema": {
+    "core": ["asset", "name", "summary", "semantic_tags", "preferred_stacks"],
+    "semantic": ["inputs", "outputs", "writes", "side_effects", "input_value_kinds", "critical_inputs", "critical_static_switches", "stack_requirements", "required_followups", "common_edits", "pitfalls"],
+    "legacy_compat": ["key_inputs"]
+  },
+  "entries": [
+    {
+      "asset": "/Niagara/Modules/Spawn/Initialization/V2/InitializeParticle.InitializeParticle",
+      "name": "InitializeParticle",
+      "summary": "Initializes common particle attributes during Particle Spawn: lifetime, color, size, mass, sprite/mesh defaults, and initial attribute values.",
+      "semantic_tags": ["spawn", "initialize", "lifetime", "color", "size", "sprite", "mesh"],
+      "preferred_stacks": ["particle_spawn"],
+      "inputs": [
+        {"name": "Lifetime", "type": "NiagaraFloat", "role": "Initial particle lifetime range or value."},
+        {"name": "Color", "type": "LinearColor", "role": "Initial Particles.Color value."},
+        {"name": "Sprite Size", "type": "Vector2f|Float", "role": "Initial sprite dimensions when sprite rendering is used."},
+        {"name": "Mesh Scale", "type": "Vector3f|Float", "role": "Initial mesh particle scale when mesh rendering is used."}
+      ],
+      "outputs": [
+        {"name": "initialized particle attributes", "role": "Provides the base values that later update modules modify."}
+      ],
+      "writes": ["Particles.Lifetime", "Particles.Age", "Particles.Color", "Particles.SpriteSize", "Particles.MeshScale", "Particles.Mass"],
+      "side_effects": ["Defines the baseline visual identity of each particle at spawn."],
+      "input_value_kinds": ["scalar", "range", "color", "vector", "enum"],
+      "key_inputs": [
+        {"name": "Color", "type": "LinearColor", "meaning": "Initial particle color."},
+        {"name": "Lifetime Min", "type": "NiagaraFloat", "meaning": "Minimum particle lifetime."},
+        {"name": "Uniform Sprite Size", "type": "NiagaraFloat", "meaning": "Initial uniform sprite size when that mode is active."}
+      ],
+      "critical_inputs": [
+        {"name": "Lifetime", "why": "Too short can make successful spawn edits appear invisible."},
+        {"name": "Color", "why": "Later color modules may multiply this instead of replacing it."},
+        {"name": "Sprite Size|Mesh Scale", "why": "Renderer type decides which size input is visible."}
+      ],
+      "stack_requirements": ["Place in particle_spawn before update-time color/size/physics modules."],
+      "required_followups": ["After color or scale edits, inspect later modules that write or multiply Particles.Color, Particles.SpriteSize, or Particles.MeshScale."],
+      "common_edits": [
+        {"goal": "make particles red at spawn", "set": {"Color": "(R=1.000000,G=0.000000,B=0.000000,A=1.000000)"}},
+        {"goal": "make particles live longer", "set": {"Lifetime": "5.0"}}
+      ],
+      "pitfalls": ["If a later color/scale module overwrites or multiplies the same attribute, changing InitializeParticle alone may appear to have no effect."],
+      "notes": "Usually one of the first Particle Spawn modules. Re-export and inspect actual inputs because module versions expose size/color modes differently."
+    },
+    {
+      "asset": "/Niagara/Modules/Spawn/Velocity/AddVelocity.AddVelocity",
+      "name": "AddVelocity",
+      "summary": "Adds initial particle velocity during spawn, usually through directional, cone, or random distributions.",
+      "semantic_tags": ["spawn", "velocity", "motion", "direction", "fountain", "projectile"],
+      "preferred_stacks": ["particle_spawn"],
+      "inputs": [
+        {"name": "Velocity Speed", "type": "NiagaraFloat", "role": "Magnitude of initial velocity."},
+        {"name": "Cone Axis", "type": "Vector3f", "role": "Main direction for cone velocity. 0,0,1 means upward."},
+        {"name": "Cone Angle", "type": "NiagaraFloat", "role": "Angular spread in degrees; 0 is a tight stream."}
+      ],
+      "outputs": [{"name": "velocity delta", "role": "Contributes to initial Particles.Velocity."}],
+      "writes": ["Particles.Velocity"],
+      "side_effects": ["Changes initial motion direction and speed before update solvers run."],
+      "input_value_kinds": ["scalar", "vector", "range", "enum"],
+      "key_inputs": [
+        {"name": "Velocity Speed", "type": "NiagaraFloat", "meaning": "Magnitude of the initial velocity."},
+        {"name": "Cone Axis", "type": "Vector3f", "meaning": "Main direction of cone-based velocity."},
+        {"name": "Cone Angle", "type": "NiagaraFloat", "meaning": "Velocity spread angle in degrees."}
+      ],
+      "critical_inputs": [
+        {"name": "Velocity Speed", "why": "Magnitude can be zero even when direction inputs look correct."},
+        {"name": "Cone Axis", "why": "Controls direction for cone/distribution modes."},
+        {"name": "Cone Angle", "why": "Large spread can hide intended direction."}
+      ],
+      "stack_requirements": ["Usually particle_spawn; needs a later motion solver/update path to keep velocity moving position."],
+      "required_followups": ["Verify Particle Update contains SolveForcesAndVelocity or another position integration path."],
+      "common_edits": [
+        {"goal": "shoot upward", "set": {"Cone Axis": "0.000000,0.000000,1.000000", "Cone Angle": "0.000000"}}
+      ],
+      "pitfalls": ["Needs a solver such as SolveForcesAndVelocity in Particle Update to keep velocity affecting position over time."],
+      "notes": "Often paired with ShapeLocation and SolveForcesAndVelocity."
+    },
+    {
+      "asset": "/Niagara/Modules/Spawn/Location/V2/ShapeLocation.ShapeLocation",
+      "name": "ShapeLocation",
+      "summary": "Places particles on or inside a procedural shape during spawn.",
+      "semantic_tags": ["spawn", "location", "shape", "distribution", "points"],
+      "preferred_stacks": ["particle_spawn"],
+      "inputs": [
+        {"name": "Shape Origin", "type": "NiagaraPosition", "role": "Origin of the spawn shape."},
+        {"name": "Shape", "type": "enum", "role": "Shape mode such as sphere, box, cylinder, torus, plane, or ring depending on version."},
+        {"name": "Sphere Radius", "type": "NiagaraFloat", "role": "Radius for sphere-like modes."},
+        {"name": "Uniform Count", "type": "NiagaraInt32", "role": "Discrete/uniform distribution count when exposed."}
+      ],
+      "outputs": [{"name": "spawn position", "role": "Initial particle position distribution."}],
+      "writes": ["Particles.Position"],
+      "side_effects": ["Controls spatial distribution of newly spawned particles."],
+      "input_value_kinds": ["position", "scalar", "integer", "enum", "range"],
+      "key_inputs": [
+        {"name": "Shape Origin", "type": "NiagaraPosition", "meaning": "Origin of the shape used for spawning."},
+        {"name": "Sphere Radius", "type": "NiagaraFloat", "meaning": "Radius when sphere-like shape modes are active."},
+        {"name": "Uniform Count", "type": "NiagaraInt32", "meaning": "Count used by uniform/discrete distribution modes."}
+      ],
+      "critical_inputs": [
+        {"name": "Shape", "why": "This mode selects which radius/extent/count inputs are meaningful."},
+        {"name": "Shape Origin", "why": "Offsets all generated positions."},
+        {"name": "Uniform Count", "why": "Only relevant for discrete/uniform modes; not arbitrary point placement."}
+      ],
+      "critical_static_switches": [
+        {"name": "Shape", "surface_values": ["Sphere", "Box", "Cylinder", "Plane", "Ring", "Torus"], "rule": "List module inputs and confirm the active shape mode before setting shape-specific fields."}
+      ],
+      "stack_requirements": ["Particle spawn location module; put before modules that offset or overwrite Particles.Position."],
+      "required_followups": ["After changing shape mode, list inputs again because shape-specific fields may appear/disappear."],
+      "common_edits": [
+        {"goal": "five discrete spawn points", "set": {"Uniform Count": "5"}},
+        {"goal": "spawn higher in space", "set": {"Shape Origin": "0.000000,0.000000,100.000000"}}
+      ],
+      "pitfalls": ["For strict arbitrary point lists, ShapeLocation alone may not be enough; use a custom/local module or array input."],
+      "notes": "List actual inputs after adding because v1/v2 shape modules expose different names."
+    },
+    {
+      "asset": "/Niagara/Modules/Emitter/SpawnRate.SpawnRate",
+      "name": "SpawnRate",
+      "summary": "Continuously spawns particles at a rate over emitter time.",
+      "semantic_tags": ["emitter", "spawn", "rate", "continuous"],
+      "preferred_stacks": ["emitter_update"],
+      "inputs": [
+        {"name": "Spawn Rate", "type": "NiagaraFloat", "role": "Particles spawned per second."}
+      ],
+      "outputs": [{"name": "spawn count request", "role": "Contributes continuous spawn requests to the emitter."}],
+      "writes": ["Emitter.SpawnInfo"],
+      "side_effects": ["Changes particle population over time."],
+      "input_value_kinds": ["scalar", "curve"],
+      "key_inputs": [
+        {"name": "Spawn Rate", "type": "NiagaraFloat", "meaning": "Particles emitted per second."}
+      ],
+      "critical_inputs": [
+        {"name": "Spawn Rate", "why": "Main density control for continuous emission."}
+      ],
+      "stack_requirements": ["Emitter update module; use burst instead for exact particle counts."],
+      "required_followups": ["If the user asks for exactly N particles, prefer SpawnBurst_Instantaneous or disable SpawnRate."],
+      "common_edits": [
+        {"goal": "double continuous density", "set": {"Spawn Rate": "2x current value"}}
+      ],
+      "pitfalls": ["Use SpawnBurst_Instantaneous instead when the request is for exactly N particles."],
+      "notes": "Usually lives in Emitter Update, not Particle Spawn."
+    },
+    {
+      "asset": "/Niagara/Modules/Emitter/SpawnBurst_Instantaneous.SpawnBurst_Instantaneous",
+      "name": "SpawnBurst_Instantaneous",
+      "summary": "Spawns a fixed count of particles at a specified emitter time.",
+      "semantic_tags": ["emitter", "spawn", "burst", "fixed count", "instantaneous"],
+      "preferred_stacks": ["emitter_update"],
+      "inputs": [
+        {"name": "Spawn Count", "type": "NiagaraInt32", "role": "Number of particles emitted by the burst."},
+        {"name": "Spawn Time", "type": "NiagaraFloat", "role": "Emitter age at which the burst fires; 0 means immediately."},
+        {"name": "Loop Count Limit", "type": "NiagaraInt32", "role": "How many emitter loops can emit this burst."}
+      ],
+      "outputs": [{"name": "spawn count request", "role": "Adds a one-shot spawn request."}],
+      "writes": ["Emitter.SpawnInfo"],
+      "side_effects": ["Creates fixed particle populations or one-shot bursts."],
+      "input_value_kinds": ["integer", "scalar"],
+      "key_inputs": [
+        {"name": "Spawn Count", "type": "NiagaraInt32", "meaning": "Number of particles emitted by the burst."},
+        {"name": "Spawn Time", "type": "NiagaraFloat", "meaning": "Emitter age at which the burst fires."},
+        {"name": "Loop Count Limit", "type": "NiagaraInt32", "meaning": "How many emitter loops can emit this burst."}
+      ],
+      "critical_inputs": [
+        {"name": "Spawn Count", "why": "Exact particle count for one burst."},
+        {"name": "Spawn Time", "why": "A nonzero time delays the burst."},
+        {"name": "Loop Count Limit", "why": "Can repeat bursts across emitter loops if not limited."}
+      ],
+      "stack_requirements": ["Emitter update module; often paired with long particle lifetime for persistent points."],
+      "required_followups": ["Check InitializeParticle lifetime and emitter loop behavior when exact visible count matters."],
+      "common_edits": [
+        {"goal": "create exactly ten long-lived particles", "set": {"Spawn Count": "10", "Spawn Time": "0.0", "Loop Count Limit": "1"}}
+      ],
+      "pitfalls": ["Particle lifetime must be long enough if the requested particles should remain visible."],
+      "notes": "Prefer this over SpawnRate when count must be exact."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/Color/ScaleColor.ScaleColor",
+      "name": "ScaleColor",
+      "summary": "Multiplies particle color and/or alpha during update.",
+      "semantic_tags": ["update", "color", "tint", "alpha", "lifetime"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Color Value To Scale", "type": "LinearColor", "role": "RGBA multiplier applied to particle color."},
+        {"name": "Scale RGB", "type": "Vector3f", "role": "RGB multiplier when RGB scale mode is active."},
+        {"name": "Scale Alpha", "type": "NiagaraFloat", "role": "Alpha multiplier."}
+      ],
+      "outputs": [{"name": "scaled color", "role": "Final color after multiplication."}],
+      "writes": ["Particles.Color"],
+      "side_effects": ["Tints or fades particles, often over lifetime."],
+      "input_value_kinds": ["color", "vector", "scalar", "curve"],
+      "key_inputs": [
+        {"name": "Color Value To Scale", "type": "LinearColor", "meaning": "Color value multiplied into the particle color."},
+        {"name": "Scale RGB", "type": "Vector3f", "meaning": "RGB multiplier when Scale RGB mode is active."},
+        {"name": "Scale Alpha", "type": "NiagaraFloat", "meaning": "Alpha multiplier."}
+      ],
+      "critical_inputs": [
+        {"name": "Color Value To Scale", "why": "Multiplies existing color; not an absolute assignment."},
+        {"name": "Scale Alpha", "why": "Can make particles invisible even if RGB is correct."}
+      ],
+      "critical_static_switches": [
+        {"name": "Scale RGB|Scale Alpha mode", "rule": "Inspect actual inputs because some versions expose separate RGB/alpha switches or curves."}
+      ],
+      "stack_requirements": ["Particle update color module; later color modules can override or multiply again."],
+      "required_followups": ["For absolute color changes, inspect InitializeParticle and any later Particles.Color writers."],
+      "common_edits": [
+        {"goal": "make particles red", "set": {"Color Value To Scale": "(R=1.000000,G=0.000000,B=0.000000,A=1.000000)", "Scale RGB": "1.000000,0.000000,0.000000"}}
+      ],
+      "pitfalls": ["Because it multiplies existing color, black input channels stay black. For absolute color, set InitializeParticle color or use a Set Parameters/local module."],
+      "notes": "If InitializeParticle already writes color, ScaleColor can further multiply it."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/Forces/V2/GravityForce.GravityForce",
+      "name": "GravityForce",
+      "summary": "Adds constant acceleration, usually downward gravity, during particle update.",
+      "semantic_tags": ["update", "force", "gravity", "acceleration"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Gravity", "type": "Vector3f", "role": "Acceleration vector applied to particles."}
+      ],
+      "outputs": [{"name": "force/acceleration", "role": "Contributes to accumulated force before solving."}],
+      "writes": ["Particles.Force", "Particles.Acceleration"],
+      "side_effects": ["Changes velocity over time after force solving."],
+      "input_value_kinds": ["vector", "user_parameter"],
+      "key_inputs": [
+        {"name": "Gravity", "type": "Vector3f", "meaning": "Acceleration vector; negative Z is downward in typical world coordinates."}
+      ],
+      "critical_inputs": [
+        {"name": "Gravity", "why": "Direction and magnitude of acceleration."}
+      ],
+      "stack_requirements": ["Particle update force module; must execute before SolveForcesAndVelocity or equivalent solver."],
+      "required_followups": ["Verify a solver exists after this module and compile_status has no errors."],
+      "common_edits": [
+        {"goal": "make particles float upward", "set": {"Gravity": "0.000000,0.000000,200.000000"}},
+        {"goal": "earth-like downward gravity", "set": {"Gravity": "0.000000,0.000000,-980.000000"}}
+      ],
+      "pitfalls": ["Requires SolveForcesAndVelocity after it. If no solver exists, force modules may appear to do nothing."],
+      "notes": "Good simple force for falling sparks or rising bubbles."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/Forces/V2/CurlNoiseForce.CurlNoiseForce",
+      "name": "CurlNoiseForce",
+      "summary": "Adds turbulent curl-noise force during particle update.",
+      "semantic_tags": ["update", "force", "noise", "turbulence", "random motion"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Noise Strength", "type": "NiagaraFloat", "role": "Magnitude of turbulent force."},
+        {"name": "Noise Frequency", "type": "NiagaraFloat", "role": "Spatial scale/frequency of the noise field."}
+      ],
+      "outputs": [{"name": "turbulent force", "role": "Contributes noise-driven force before solving."}],
+      "writes": ["Particles.Force"],
+      "side_effects": ["Adds organic swirling/drifting motion."],
+      "input_value_kinds": ["scalar", "curve", "user_parameter"],
+      "key_inputs": [
+        {"name": "Noise Strength", "type": "NiagaraFloat", "meaning": "Magnitude of the turbulent force."},
+        {"name": "Noise Frequency", "type": "NiagaraFloat", "meaning": "Spatial scale of the noise field."}
+      ],
+      "critical_inputs": [
+        {"name": "Noise Strength", "why": "Main force magnitude; zero makes the module effectively invisible."},
+        {"name": "Noise Frequency", "why": "Controls visual scale of turbulence."}
+      ],
+      "stack_requirements": ["Particle update force module; must execute before SolveForcesAndVelocity or equivalent solver."],
+      "required_followups": ["Pair with Drag if motion becomes too chaotic, and verify solver order."],
+      "common_edits": [
+        {"goal": "slow drifting random motion", "set": {"Noise Strength": "50.0", "Noise Frequency": "0.005"}}
+      ],
+      "pitfalls": ["Needs SolveForcesAndVelocity later in Particle Update."],
+      "notes": "Use lower frequency for broad motion and higher frequency for choppy detail."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/Forces/V2/Drag.Drag",
+      "name": "Drag",
+      "summary": "Damps particle velocity over time, making motion slow down.",
+      "semantic_tags": ["update", "force", "drag", "damping", "velocity"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Drag", "type": "NiagaraFloat", "role": "Strength of velocity damping."}
+      ],
+      "outputs": [{"name": "drag force", "role": "Opposes current velocity."}],
+      "writes": ["Particles.Force", "Particles.Velocity"],
+      "side_effects": ["Reduces speed and makes motion settle."],
+      "input_value_kinds": ["scalar", "curve"],
+      "key_inputs": [
+        {"name": "Drag", "type": "NiagaraFloat", "meaning": "Velocity damping strength."}
+      ],
+      "critical_inputs": [
+        {"name": "Drag", "why": "High values can suppress all other velocity/force edits."}
+      ],
+      "stack_requirements": ["Particle update force/velocity damping module; place before/near solver according to stack defaults."],
+      "required_followups": ["If forces appear ineffective, check whether Drag is too high."],
+      "common_edits": [
+        {"goal": "make particles slow down faster", "set": {"Drag": "larger value"}}
+      ],
+      "pitfalls": ["Excessive drag can hide velocity/force changes from other modules."],
+      "notes": "Useful with gravity, curl noise, or attraction to avoid runaway motion."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/Forces/V2/PointAttractionForce.PointAttractionForce",
+      "name": "PointAttractionForce",
+      "summary": "Attracts particles toward a target point.",
+      "semantic_tags": ["update", "force", "attraction", "target", "gravity"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Attractor Position", "type": "NiagaraPosition", "role": "Target point used by the attraction force."},
+        {"name": "Attraction Strength", "type": "NiagaraFloat", "role": "Magnitude of attraction."},
+        {"name": "Attraction Radius", "type": "NiagaraFloat", "role": "Distance over which attraction is applied."}
+      ],
+      "outputs": [{"name": "attraction force", "role": "Pulls velocity/position toward the target through the solver."}],
+      "writes": ["Particles.Force"],
+      "side_effects": ["Creates gathering, orbit-like, or central pull behavior."],
+      "input_value_kinds": ["position", "scalar", "user_parameter"],
+      "key_inputs": [
+        {"name": "Attractor Position", "type": "NiagaraPosition", "meaning": "Target point used by the attraction force."},
+        {"name": "Attraction Strength", "type": "NiagaraFloat", "meaning": "Magnitude of the attraction."},
+        {"name": "Attraction Radius", "type": "NiagaraFloat", "meaning": "Radius over which attraction is applied."}
+      ],
+      "critical_inputs": [
+        {"name": "Attractor Position", "why": "Target point for the force."},
+        {"name": "Attraction Strength", "why": "Main magnitude; negative or tiny values change behavior dramatically."},
+        {"name": "Attraction Radius", "why": "Particles outside radius may not respond."}
+      ],
+      "stack_requirements": ["Particle update force module; requires SolveForcesAndVelocity or equivalent integration after it."],
+      "required_followups": ["For particle-to-particle attraction, use a local module/simulation stage instead of this point force."],
+      "common_edits": [
+        {"goal": "soft central pull", "set": {"Attraction Strength": "20.0", "Attraction Radius": "900.0"}}
+      ],
+      "pitfalls": ["This is not pairwise particle-to-particle gravity. For inter-particle gravity, use a local module or simulation stage."],
+      "notes": "Often paired with Drag to prevent overshooting."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/Forces/V2/VortexForce.VortexForce",
+      "name": "VortexForce",
+      "summary": "Applies swirling/tangential force around an axis or point.",
+      "semantic_tags": ["update", "force", "vortex", "swirl", "orbit"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Vortex Axis", "type": "Vector3f", "role": "Axis around which particles swirl."},
+        {"name": "Vortex Center", "type": "NiagaraPosition", "role": "Center point of the vortex."},
+        {"name": "Vortex Strength", "type": "NiagaraFloat", "role": "Tangential force strength."}
+      ],
+      "outputs": [{"name": "swirl force", "role": "Adds tangential force around a center/axis."}],
+      "writes": ["Particles.Force"],
+      "side_effects": ["Creates spiral, tornado, orbital, or whirlpool motion."],
+      "input_value_kinds": ["position", "vector", "scalar"],
+      "key_inputs": [
+        {"name": "Vortex Axis", "type": "Vector3f", "meaning": "Axis around which particles rotate."},
+        {"name": "Vortex Strength", "type": "NiagaraFloat", "meaning": "Strength of tangential swirling force."}
+      ],
+      "critical_inputs": [
+        {"name": "Vortex Axis", "why": "Defines the swirl axis."},
+        {"name": "Vortex Center", "why": "Defines the center of rotation."},
+        {"name": "Vortex Strength", "why": "Main tangential force magnitude."}
+      ],
+      "stack_requirements": ["Particle update force module; requires SolveForcesAndVelocity or equivalent integration after it."],
+      "required_followups": ["Use Drag to stabilize if particles fly away, and verify solver order."],
+      "common_edits": [
+        {"goal": "swirl around vertical axis", "set": {"Vortex Axis": "0.000000,0.000000,1.000000"}}
+      ],
+      "pitfalls": ["Needs SolveForcesAndVelocity; combine with Drag for stable vortex motion."],
+      "notes": "Search/list actual inputs because V2 names may differ by engine version."
+    },
+    {
+      "asset": "/Niagara/Modules/Solvers/SolveForcesAndVelocity.SolveForcesAndVelocity",
+      "name": "SolveForcesAndVelocity",
+      "summary": "Integrates accumulated forces and velocity to update particle position.",
+      "semantic_tags": ["update", "solver", "forces", "velocity", "position"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [],
+      "outputs": [{"name": "integrated motion", "role": "Applies force/velocity accumulation to particle movement."}],
+      "writes": ["Particles.Velocity", "Particles.Position", "Particles.PreviousPosition"],
+      "side_effects": ["Makes force modules visibly affect particle position."],
+      "input_value_kinds": [],
+      "key_inputs": [],
+      "critical_inputs": [],
+      "stack_requirements": ["Particle update solver; place after force/velocity modules that should affect position."],
+      "required_followups": ["If force modules do nothing, add or move this after them, then compile_status."],
+      "common_edits": [],
+      "pitfalls": ["Force modules before this may do nothing visually if this solver is absent or disabled."],
+      "notes": "Place after force modules such as CurlNoiseForce, GravityForce, VortexForce, or PointAttractionForce."
+    },
+    {
+      "asset": "/Niagara/Modules/Spawn/Location/StaticMeshLocation.StaticMeshLocation",
+      "name": "StaticMeshLocation",
+      "summary": "Spawns particles from a static mesh source, commonly surface/vertex/triangle sampling.",
+      "semantic_tags": ["spawn", "location", "static mesh", "surface", "mesh sampling"],
+      "preferred_stacks": ["particle_spawn"],
+      "inputs": [
+        {"name": "Static Mesh", "type": "NiagaraDataInterfaceStaticMesh", "role": "Static mesh data source."},
+        {"name": "Sampling Mode", "type": "enum", "role": "Controls surface/vertex/triangle sampling when exposed."}
+      ],
+      "outputs": [{"name": "sampled mesh position", "role": "Initial particle location sampled from a static mesh."}],
+      "writes": ["Particles.Position", "Particles.Normal", "Particles.UV"],
+      "side_effects": ["Makes particles originate from mesh geometry."],
+      "input_value_kinds": ["data_interface", "enum", "bool"],
+      "key_inputs": [
+        {"name": "Static Mesh", "type": "NiagaraDataInterfaceStaticMesh", "meaning": "The static mesh data interface used as the spawn source."},
+        {"name": "Sampling Mode", "type": "enum", "meaning": "Controls how the static mesh is sampled."}
+      ],
+      "critical_inputs": [
+        {"name": "Static Mesh", "why": "The actual mesh source; without a valid asset sampling produces no useful positions."},
+        {"name": "Sampling Mode|Mesh Sampling Type", "why": "Chooses surface/triangle/vertex behavior depending on module version."}
+      ],
+      "critical_static_switches": [
+        {"name": "Sampling Mode|Mesh Sampling Type", "surface_values": ["Triangles", "Vertices", "Surface"], "rule": "For surface emission, explicitly choose a surface/triangle/vertex value after list_module_inputs."}
+      ],
+      "stack_requirements": ["Particle spawn location module; place before modules that overwrite Particles.Position."],
+      "required_followups": ["Always list inputs after adding because static mesh module versions expose different sampling names."],
+      "common_edits": [
+        {"goal": "spawn particles on a static mesh surface", "set": {"Sampling Mode": "Surface"}}
+      ],
+      "pitfalls": ["Data-interface input names vary by module version. Always list inputs after adding."],
+      "notes": "Good for mesh surface emission."
+    },
+    {
+      "asset": "/Niagara/Modules/Spawn/Location/V2/SkeletalMeshLocation.SkeletalMeshLocation",
+      "name": "SkeletalMeshLocation",
+      "summary": "Spawns particles from skeletal mesh locations such as surface, vertices, or bones.",
+      "semantic_tags": ["spawn", "location", "skeletal mesh", "surface", "bone", "mesh sampling"],
+      "preferred_stacks": ["particle_spawn"],
+      "inputs": [
+        {"name": "Skeletal Mesh", "type": "NiagaraDataInterfaceSkeletalMesh", "role": "Skeletal mesh data source."},
+        {"name": "Mesh Sampling Type", "type": "static_switch|enum", "role": "Critical hidden/static switch. Selects whether the module samples mesh surface data or skeleton bones/sockets."},
+        {"name": "Location Mode", "type": "enum", "role": "Controls how sampled mesh data becomes particle position."}
+      ],
+      "outputs": [{"name": "sampled skeletal mesh position", "role": "Initial particle location from animated mesh data."}],
+      "writes": ["Particles.Position", "Particles.Normal", "Particles.UV"],
+      "side_effects": ["Binds spawn distribution to a skeletal mesh source."],
+      "input_value_kinds": ["data_interface", "enum", "bool"],
+      "key_inputs": [
+        {"name": "Skeletal Mesh", "type": "NiagaraDataInterfaceSkeletalMesh", "meaning": "The skeletal mesh data interface used as the spawn source."},
+        {"name": "Mesh Sampling Type", "type": "static_switch|enum", "meaning": "Controls surface/triangle/vertex vs bone/socket sampling. Must be inspected with list_module_inputs because it can be hidden."}
+      ],
+      "critical_inputs": [
+        {"name": "Skeletal Mesh", "why": "The data interface asset/user parameter; without it sampling may use defaults or fail."},
+        {"name": "Mesh Sampling Type", "why": "Critical hidden/static switch that decides mesh surface vs skeleton sampling."},
+        {"name": "Location Mode", "why": "Controls how sampled data is applied to Particles.Position."}
+      ],
+      "critical_static_switches": [
+        {"name": "Mesh Sampling Type", "surface_values": ["Triangles", "Vertices", "Surface"], "skeleton_values": ["Bones", "Sockets", "Skeleton"], "rule": "For mesh surface emission, explicitly choose a surface/triangle/vertex value; do not leave this on a bone/socket/skeleton value."}
+      ],
+      "stack_requirements": ["Particle spawn location module; list inputs immediately after adding because important switches may be hidden."],
+      "required_followups": ["After setting mesh/data-interface/user parameter, set Mesh Sampling Type explicitly and run compile_status."],
+      "common_edits": [
+        {"goal": "spawn on skeletal mesh surface", "set": {"Mesh Sampling Type": "Triangles or Surface"}},
+        {"goal": "spawn from bones", "set": {"Mesh Sampling Type": "Bones"}}
+      ],
+      "pitfalls": ["Do not add obsolete modules named like Skeletal Mesh Surface Location. Search this module, add it, re-export, then list actual inputs.", "Surface emission is not guaranteed by adding this module; the hidden/static switch Mesh Sampling Type may still point at bones or sockets."],
+      "notes": "Modern UE versions consolidate skeletal mesh sampling into this module plus input modes."
+    },
+    {
+      "asset": "/Niagara/Modules/Update/MeshInterface/SampleSkeletalMesh.SampleSkeletalMesh",
+      "name": "SampleSkeletalMesh",
+      "summary": "Samples skeletal mesh data during update without necessarily spawning from it.",
+      "semantic_tags": ["update", "skeletal mesh", "sample", "data interface"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Skeletal Mesh", "type": "NiagaraDataInterfaceSkeletalMesh", "role": "Mesh data source to sample."},
+        {"name": "Sampling Coordinates", "type": "struct|enum", "role": "Coordinates or mode used to pick mesh data."}
+      ],
+      "outputs": [
+        {"name": "sampled position", "role": "Read mesh position data."},
+        {"name": "sampled normal", "role": "Read mesh normal/tangent data."}
+      ],
+      "writes": ["Module.*", "Particles.* when assigned by exposed options"],
+      "side_effects": ["Provides mesh-derived data that can drive position, color, velocity, or custom attributes."],
+      "input_value_kinds": ["data_interface", "enum", "position", "integer"],
+      "key_inputs": [
+        {"name": "Skeletal Mesh", "type": "NiagaraDataInterfaceSkeletalMesh", "meaning": "Mesh data source to sample."}
+      ],
+      "critical_inputs": [
+        {"name": "Skeletal Mesh", "why": "The data source for all mesh samples."},
+        {"name": "Mesh Sampling Type|Sampling Coordinates", "why": "Controls whether reads use surface, vertex, triangle, bone, or coordinate inputs depending on version."}
+      ],
+      "critical_static_switches": [
+        {"name": "Mesh Sampling Type|Sampling Coordinates", "surface_values": ["Triangles", "Vertices", "Surface"], "skeleton_values": ["Bones", "Sockets", "Skeleton"], "rule": "Inspect actual hidden/static-switch inputs before assuming surface sampling."}
+      ],
+      "stack_requirements": ["Often particle_update or simulation_stage; does not automatically write Particles.Position unless wired/assigned."],
+      "required_followups": ["After adding, list inputs and inspect outputs/writes. Add assignment/local module if sampled data must drive position/color/velocity."],
+      "common_edits": [],
+      "pitfalls": ["Sampling outputs may not write Particles.Position automatically. Use a local module or assignment if the requested attribute is not exposed."],
+      "notes": "Useful for follow-mesh or mesh-driven update effects."
+    },
+    {
+      "asset": "/Niagara/Modules/AttributeReader/SampleParticlesFromOtherEmitter.SampleParticlesFromOtherEmitter",
+      "name": "SampleParticlesFromOtherEmitter",
+      "summary": "Reads attributes from particles in another emitter through an Attribute Reader data interface.",
+      "semantic_tags": ["attribute reader", "other emitter", "sample", "dependency", "simulation stage"],
+      "preferred_stacks": ["particle_update", "simulation_stage"],
+      "inputs": [
+        {"name": "Emitter Name", "type": "Name|String", "role": "Source emitter to read from."},
+        {"name": "Particle Index", "type": "NiagaraInt32", "role": "Index or ID used to sample source particle data."},
+        {"name": "Attribute", "type": "NiagaraVariable", "role": "Source particle attribute to read."}
+      ],
+      "outputs": [{"name": "sampled attribute", "role": "Data read from another emitter."}],
+      "writes": ["Module.*", "Particles.* when assigned"],
+      "side_effects": ["Creates inter-emitter dependency and enables constraints/links/chain effects."],
+      "input_value_kinds": ["data_interface", "name", "integer", "attribute"],
+      "key_inputs": [
+        {"name": "Emitter Name", "type": "Name", "meaning": "Source emitter to read from."}
+      ],
+      "critical_inputs": [
+        {"name": "Emitter Name", "why": "Must exactly match the source emitter identifier expected by the attribute reader."},
+        {"name": "Particle Index|Particle ID", "why": "Determines which source particle is sampled."},
+        {"name": "Attribute", "why": "Controls which value is read from the source emitter."}
+      ],
+      "stack_requirements": ["Requires a valid source emitter and compatible sim target/data visibility."],
+      "required_followups": ["Verify emitter names, sim target, and source attribute existence after export."],
+      "common_edits": [
+        {"goal": "read another particle's position", "set": {"Attribute": "Particles.Position"}}
+      ],
+      "pitfalls": ["Requires valid source emitter and stable indexing/ID strategy. GPU/CPU sim target matters."],
+      "notes": "Often appears in chain/constraint systems."
+    },
+    {
+      "asset": "/Niagara/Modules/Events/GenerateDeathEvent.GenerateDeathEvent",
+      "name": "GenerateDeathEvent",
+      "summary": "Emits an event when particles die.",
+      "semantic_tags": ["event", "death", "generate", "spawn secondary"],
+      "preferred_stacks": ["particle_update"],
+      "inputs": [
+        {"name": "Event Name", "type": "Name", "role": "Name of generated death event."}
+      ],
+      "outputs": [{"name": "death event", "role": "Event payload consumed by event handlers/receiver modules."}],
+      "writes": ["Event.*"],
+      "side_effects": ["Can trigger secondary emitters or event-driven logic on particle death."],
+      "input_value_kinds": ["name", "bool"],
+      "key_inputs": [
+        {"name": "Event Name", "type": "Name", "meaning": "Name of generated death event."}
+      ],
+      "critical_inputs": [
+        {"name": "Event Name", "why": "Must match the receiver/event handler configuration."}
+      ],
+      "stack_requirements": ["Particle update event generator; requires event handler/receiver to consume the event."],
+      "required_followups": ["Check receiver event name and event handler source after adding."],
+      "common_edits": [],
+      "pitfalls": ["Event handlers must be configured to receive the generated event."],
+      "notes": "Use when one particle system should spawn or notify another on death."
+    },
+    {
+      "asset": "/Niagara/Modules/Events/ReceiveLocationEvent.ReceiveLocationEvent",
+      "name": "ReceiveLocationEvent",
+      "summary": "Consumes location event payloads and usually spawns/positions particles from event data.",
+      "semantic_tags": ["event", "receive", "location", "spawn secondary"],
+      "preferred_stacks": ["event_handler", "particle_spawn"],
+      "inputs": [
+        {"name": "Event Name", "type": "Name", "role": "Incoming event stream name."},
+        {"name": "Execution Mode", "type": "enum", "role": "How received events drive spawning or updates."}
+      ],
+      "outputs": [{"name": "event payload data", "role": "Location/velocity/custom data from event source."}],
+      "writes": ["Particles.Position", "Particles.Velocity"],
+      "side_effects": ["Links one emitter's generated events to another emitter's particles."],
+      "input_value_kinds": ["name", "enum"],
+      "key_inputs": [
+        {"name": "Event Name", "type": "Name", "meaning": "Incoming event stream name."}
+      ],
+      "critical_inputs": [
+        {"name": "Event Name", "why": "Must match the generator event name."},
+        {"name": "Execution Mode", "why": "Controls whether event payload drives spawn/update behavior."}
+      ],
+      "critical_static_switches": [
+        {"name": "Execution Mode", "rule": "Inspect actual input enum/static switch before assuming it spawns particles."}
+      ],
+      "stack_requirements": ["Requires event handler wiring and a matching generator module."],
+      "required_followups": ["Verify event handler source_event and generator Event Name agree."],
+      "common_edits": [],
+      "pitfalls": ["Needs matching generator event name and event handler wiring."],
+      "notes": "Useful for trails, secondary bursts, and event-driven spawn."
+    },
+    {
+      "asset": "/Niagara/Modules/Collision/CollisionQuery.CollisionQuery",
+      "name": "CollisionQuery",
+      "summary": "Queries scene collision information such as depth/distance fields/ray hits depending on module configuration.",
+      "semantic_tags": ["collision", "query", "scene", "depth", "distance field"],
+      "preferred_stacks": ["particle_update", "simulation_stage"],
+      "inputs": [
+        {"name": "Trace Direction", "type": "Vector3f", "role": "Direction for collision/ray queries when exposed."},
+        {"name": "Query Distance", "type": "NiagaraFloat", "role": "Maximum query distance."}
+      ],
+      "outputs": [{"name": "collision hit data", "role": "Surface position, normal, distance, or hit state."}],
+      "writes": ["Module.Collision*", "Particles.Collision* when assigned"],
+      "side_effects": ["Enables collision response modules or custom hit logic."],
+      "input_value_kinds": ["vector", "scalar", "enum", "bool"],
+      "key_inputs": [
+        {"name": "Query Distance", "type": "NiagaraFloat", "meaning": "Maximum query distance."}
+      ],
+      "critical_inputs": [
+        {"name": "Trace Direction", "why": "Direction for ray/depth-style queries when active."},
+        {"name": "Query Distance", "why": "Too small returns no hits."}
+      ],
+      "critical_static_switches": [
+        {"name": "Collision Query Mode|Trace Mode", "rule": "Collision modules often branch by query backend; list inputs before changing behavior."}
+      ],
+      "stack_requirements": ["Particle update or simulation stage; behavior depends on CPU/GPU sim target and enabled collision data source."],
+      "required_followups": ["Verify sim target and collision data source/project settings if queries return nothing."],
+      "common_edits": [],
+      "pitfalls": ["Collision behavior depends heavily on sim target and renderer/project collision settings."],
+      "notes": "Use with collision response modules for bouncing/sliding/stopping."
+    },
+    {
+      "asset": "/Niagara/Modules/Constraints/CalculateLinkConstraint.CalculateLinkConstraint",
+      "name": "CalculateLinkConstraint",
+      "summary": "Computes constraint forces or corrections between linked particles/points.",
+      "semantic_tags": ["constraints", "link", "chain", "distance", "simulation stage"],
+      "preferred_stacks": ["simulation_stage", "particle_update"],
+      "inputs": [
+        {"name": "Rest Length", "type": "NiagaraFloat", "role": "Target distance between linked points."},
+        {"name": "Stiffness", "type": "NiagaraFloat", "role": "How strongly the constraint corrects error."},
+        {"name": "Linked Particle", "type": "AttributeReader|Index", "role": "Neighbor/linked particle to constrain against."}
+      ],
+      "outputs": [{"name": "constraint correction", "role": "Position/velocity correction for maintaining link distance."}],
+      "writes": ["Particles.Position", "Particles.Velocity", "Module.Constraint*"],
+      "side_effects": ["Creates chain, rope, cloth-like, or linked-particle behavior."],
+      "input_value_kinds": ["scalar", "integer", "attribute_reader"],
+      "key_inputs": [
+        {"name": "Rest Length", "type": "NiagaraFloat", "meaning": "Target link distance."},
+        {"name": "Stiffness", "type": "NiagaraFloat", "meaning": "Constraint correction strength."}
+      ],
+      "critical_inputs": [
+        {"name": "Rest Length", "why": "Target distance for the constraint."},
+        {"name": "Stiffness", "why": "Correction strength; too high can explode without enough iterations/damping."},
+        {"name": "Linked Particle", "why": "Determines which neighbor/particle is constrained."}
+      ],
+      "stack_requirements": ["Usually simulation_stage or carefully ordered particle_update; needs stable particle IDs/indices."],
+      "required_followups": ["Check ID/index setup and iteration/stage order before tuning stiffness."],
+      "common_edits": [
+        {"goal": "make chain tighter", "set": {"Rest Length": "smaller value", "Stiffness": "larger value"}}
+      ],
+      "pitfalls": ["Usually needs stable particle IDs/indices and may require simulation stages for iterative solving."],
+      "notes": "Useful reference for explaining Chain_SimulationStages-like systems."
+    },
+    {
+      "asset": "/Niagara/Modules/Collision/InitializeNeighborGrid.InitializeNeighborGrid",
+      "name": "InitializeNeighborGrid",
+      "summary": "Initializes a Neighbor Grid data interface for spatial queries among particles.",
+      "semantic_tags": ["neighbor grid", "simulation stage", "spatial query", "gpu"],
+      "preferred_stacks": ["simulation_stage", "system_update"],
+      "inputs": [
+        {"name": "Grid", "type": "NiagaraDataInterfaceNeighborGrid3D", "role": "Neighbor grid data interface to initialize."},
+        {"name": "World Bounds", "type": "bounds|vector", "role": "Spatial region covered by the grid."},
+        {"name": "Cell Size", "type": "NiagaraFloat", "role": "Spatial resolution of grid cells."}
+      ],
+      "outputs": [{"name": "initialized grid", "role": "Cleared/prepared neighbor grid for population and lookup."}],
+      "writes": ["NeighborGrid3D"],
+      "side_effects": ["Prepares GPU spatial acceleration for neighbor search."],
+      "input_value_kinds": ["data_interface", "bounds", "scalar", "integer"],
+      "key_inputs": [
+        {"name": "Cell Size", "type": "NiagaraFloat", "meaning": "Grid resolution."}
+      ],
+      "critical_inputs": [
+        {"name": "Grid", "why": "Must be the same NeighborGrid data interface used by populate/query stages."},
+        {"name": "World Bounds", "why": "Particles outside bounds will not be found."},
+        {"name": "Cell Size", "why": "Controls precision and capacity tradeoff."}
+      ],
+      "stack_requirements": ["Initialize before PopulateNeighborGrid and before any lookup/query stage."],
+      "required_followups": ["Verify all neighbor-grid modules reference the same grid and compatible bounds."],
+      "common_edits": [
+        {"goal": "increase neighbor search precision", "set": {"Cell Size": "smaller value"}}
+      ],
+      "pitfalls": ["Must be paired with PopulateNeighborGrid and lookup logic; wrong bounds/cell size can make queries empty."],
+      "notes": "Relevant for flocking, constraints, collision, and particle-neighbor logic."
+    },
+    {
+      "asset": "/Niagara/Modules/Collision/PopulateNeighborGrid.PopulateNeighborGrid",
+      "name": "PopulateNeighborGrid",
+      "summary": "Writes particle locations/indices into a Neighbor Grid for later neighbor lookup.",
+      "semantic_tags": ["neighbor grid", "simulation stage", "spatial query", "gpu", "populate"],
+      "preferred_stacks": ["simulation_stage", "particle_update"],
+      "inputs": [
+        {"name": "Grid", "type": "NiagaraDataInterfaceNeighborGrid3D", "role": "Neighbor grid data interface to populate."},
+        {"name": "Position", "type": "NiagaraPosition", "role": "Particle position used for binning."},
+        {"name": "Particle ID/Index", "type": "NiagaraInt32", "role": "Particle identifier written into grid cells."}
+      ],
+      "outputs": [{"name": "populated grid", "role": "Grid cells containing particle indices for lookup."}],
+      "writes": ["NeighborGrid3D"],
+      "side_effects": ["Enables later modules/stages to query nearby particles."],
+      "input_value_kinds": ["data_interface", "position", "integer"],
+      "key_inputs": [
+        {"name": "Grid", "type": "NiagaraDataInterfaceNeighborGrid3D", "meaning": "Grid to populate."}
+      ],
+      "critical_inputs": [
+        {"name": "Grid", "why": "Must match the initialized/query grid."},
+        {"name": "Position", "why": "Determines where each particle is binned."},
+        {"name": "Particle ID/Index", "why": "Determines what later lookup returns."}
+      ],
+      "stack_requirements": ["Run after InitializeNeighborGrid and before lookup/constraint/query stages."],
+      "required_followups": ["Verify initialize -> populate -> query order and same grid data interface."],
+      "common_edits": [],
+      "pitfalls": ["Order matters: initialize grid before populating, and query after population."],
+      "notes": "Core building block for neighbor-based GPU effects."
+    }
+  ]
+}

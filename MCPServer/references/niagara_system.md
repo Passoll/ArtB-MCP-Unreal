@@ -1,0 +1,215 @@
+# Niagara System Tools
+
+`export_niagara_system(asset_path)` returns an AI-oriented Niagara System summary.
+
+The exporter prefers Niagara's authored structure over raw graph dumps:
+
+- `system_stages`: System Spawn and System Update scripts.
+- `emitters`: ordered emitter handles with enabled state, sim target, renderers, event handlers, and simulation stages.
+- `stages`: per-emitter Emitter Spawn, Emitter Update, Particle Spawn, and Particle Update scripts.
+- `modules`: ordered `UNiagaraNodeFunctionCall` entries found through graph traversal.
+- `parameter_maps`: compact read/write traversal hints from Niagara Parameter Map history.
+- `compact_graph`: bounded node/edge graph for debugging and future writeback.
+
+The root includes a `session_id`. Module ids such as `e0.particle_update.m0` and graph node ids such as `e0.particle_update.m0.g0` are local aliases stored in plugin memory for future writeback. They do not expose Unreal GUIDs or UObject internals.
+
+Module graphs are intentionally compressed. `Reroute` nodes are skipped in compact output. If a question only needs one visual output or parameter, prefer future trace tools over sending the full compact graph.
+
+## Export Scope
+
+- `UNiagaraSystem` assets only.
+- Module internals are summarized as bounded compact graphs, not full raw editor graphs.
+- Stack/module export and mutation are routed through `FToolPlayMCPNiagaraModuleService`. It currently uses graph traversal as a fallback where Niagara's stack utilities do not expose linkable public symbols.
+
+## Common Workflow
+
+1. Create or load a system with `create_niagara_system` or an existing asset path.
+2. For a from-scratch effect, add an emitter with `niagara(action="add_default_emitter")`; it uses the Niagara editor Minimal Emitter and avoids template hunting.
+3. Add emitters with `add_niagara_emitter` only when the user explicitly wants to reuse an existing emitter asset.
+4. Call `export_niagara_system(asset_path)` to get `session_id`, stack aliases, and module aliases.
+5. Before adding any module, call `niagara(action="search_module", params={"query":"...","usage":"module"})` and use only a `script_asset_path` returned by that search or by a documented recipe.
+6. Read the search result's `summary`, `inputs`, `outputs`, `writes`, `side_effects`, `input_value_kinds`, `critical_inputs`, `critical_static_switches`, `stack_requirements`, `required_followups`, `common_edits`, `preferred_stacks`, `pitfalls`, and `notes` before adding the module.
+7. Add/remove/move/enable modules by alias, then re-export because aliases are volatile after structural edits.
+8. Inspect the added module with `niagara(action="list_module_inputs")`; do not set inputs that were not found by search semantics or by this input list.
+9. Mutate parameters with set/bind tools.
+10. Call `niagara(action="compile_status", params={"asset_path":"...","wait":true})` after edits and inspect `diagnostics.has_errors` plus `diagnostics.scripts[].compile_errors`.
+11. Save explicitly with `asset(action="save", params={"asset_path":"..."})`.
+
+Example:
+
+```text
+export_niagara_system("/Game/Fx/MySystem.MySystem")
+niagara(action="add_default_emitter", params={"system_asset_path":"/Game/Fx/MySystem.MySystem","emitter_name":"Emitter"})
+niagara(action="export", params={"asset_path":"/Game/Fx/MySystem.MySystem"})
+niagara(action="add_module", params={"session_id":session_id,"target_stack":"e0.particle_update","script_asset_path":"/Niagara/Modules/Particles/Update/Forces/GravityForce.GravityForce","target_index":-1})
+niagara(action="export", params={"asset_path":"/Game/Fx/MySystem.MySystem"})
+niagara(action="list_module_inputs", params={"session_id":session_id,"module":"e0.particle_update.m1"})
+niagara(action="get_module_input_override", params={"session_id":session_id,"module":"e0.particle_update.m1","input":"Some Input"})
+niagara(action="bind_module_input", params={"session_id":session_id,"module":"e0.particle_update.m1","input":"Some Input","user_parameter":"User.SomeInput"})
+niagara(action="bind_module_input", params={"session_id":session_id,"module":"e0.particle_update.m1","input":"Noise Texture","user_parameter":"User.NoiseTexture","binding_kind":"volume_texture","default_asset_path":"/Engine/Path/T_Volume.T_Volume"})
+niagara(action="compile_status", params={"asset_path":"/Game/Fx/MySystem.MySystem","wait":true})
+asset(action="save", params={"asset_path":"/Game/Fx/MySystem.MySystem"})
+```
+
+## Tools
+
+`niagara(action="search_module", params={"query":"","usage":"module","source":"all","limit":20})`
+
+Discover addable Niagara scripts. The tool uses Niagara Editor's filtered script asset API, so default results are library-visible, non-deprecated scripts that should correspond to Niagara's Add menu. MCP search results are enriched with cached semantic notes, stack fit, normalized inputs, outputs, writes, side effects, critical inputs/static switches, stack requirements, required followups, common edits, pitfalls, and usage notes when available.
+
+Always search before `niagara(action="add_module")`. Do not guess old module names or hand-write script asset paths. If a module is missing from search, do not force an unrelated module into the stack.
+
+`export_niagara_system(asset_path)`
+
+Export system stages, emitters, renderers, event handlers, simulation stages, ordered modules, compact module graphs, compile diagnostics, and session aliases.
+
+Each exported module includes `input_summary`. If `input_summary.requires_input_review` is true, inspect `input_summary.hidden_static_switches` and call `niagara(action="list_module_inputs")` before changing or explaining the module. Hidden static switches can change which internal branch executes; for example, `SkeletalMeshLocation` may sample bones/sockets instead of mesh surface unless `Mesh Sampling Type` is explicitly set to a surface/triangle/vertex mode.
+
+`niagara(action="compile_status", params={"asset_path":"...","force":false,"wait":true})`
+
+Read Niagara System compile diagnostics in a compact, AI-readable shape. Use this after any Niagara mutation. Set `wait=true` to wait for pending script/GPU compilation before reading status. Set `force=true` when the system may have stale compile data and you need Unreal to request a fresh compile.
+
+The response includes:
+
+- `diagnostics.status`: worst script status across system scripts, emitter scripts, event handlers, and simulation stages.
+- `diagnostics.has_errors` / `has_warnings`: quick gates for automated repair loops.
+- `diagnostics.scripts[]`: one entry per script with `scope`, `emitter`, `stage`, `usage`, `status`, and `compile_errors`.
+
+`create_niagara_system(package_path, asset_name, template_asset_path="")`
+
+Create a Niagara System asset. Without a template it creates the normal default system graph. With `template_asset_path`, it duplicates that Niagara System as the starting point.
+
+Do not search project files for a template unless the user explicitly asks to reuse an existing system. For common effects, prefer a documented recipe; for custom rules, prefer local/scratch module tooling instead of ad-hoc template hunting.
+
+`add_niagara_emitter(system_asset_path, emitter_asset_path, emitter_name="")`
+
+Add an existing Niagara Emitter asset to a system. Re-export after adding to get `e0.*` stack aliases. This tool does not create emitters from scratch and should not trigger a project-wide search for "similar" emitters unless the user requested reuse.
+
+`niagara(action="add_default_emitter", params={"system_asset_path":"...","emitter_name":"Emitter"})`
+
+Add the Niagara editor Minimal Emitter configured in `UNiagaraEditorSettings::DefaultEmptyEmitter`. Use this for from-scratch systems instead of searching for a random emitter template. Re-export after adding to get `e0.*` stack aliases. If the project has no Minimal Emitter configured, the tool reports a clear error and the user should configure Project Settings > Plugins > Niagara > Minimal Emitter or explicitly provide an emitter asset.
+
+`niagara(action="add_module", params={"session_id":"...","target_stack":"...","script_asset_path":"...","target_index":-1,"suggested_name":""})`
+
+Insert a Niagara module script into a stack alias such as `system.system_update`, `e0.particle_spawn`, or `e0.particle_update`. Use only script paths returned by `niagara(action="search_module")`, a documented recipe, or an existing exported system. Re-export after insertion to get the new module alias, then call `niagara(action="list_module_inputs")` before setting parameters.
+
+`niagara(action="create_local_module", params={"session_id":"...","target_stack":"...","target_index":-1,"module_name":"MCP_LocalModule"})`
+
+Create a Niagara scratch/local module script, add it to the owning system's scratch pad, and insert it into a stack alias. Use this when the requested behavior is custom and cannot be expressed cleanly with library-visible modules. Re-export immediately after creation to get stable module and graph aliases.
+
+`niagara(action="patch_module_graph", params={"session_id":"...","module":"...","ops":[...]})`
+
+Patch an exported Niagara module's internal graph. Supported operation types:
+
+- `add_node`: Add `custom_hlsl`, `op`, or `function_call` nodes. `custom_hlsl` accepts `hlsl`; `op` accepts `op_name`; `function_call` accepts `script_asset_path`.
+- `connect`: Connect one output pin to one input pin with `from_node`, `from_pin`, `to_node`, and `to_pin`.
+- `disconnect`: Break one specified edge with the same pin fields as `connect`.
+- `set_custom_hlsl`: Update a `custom_hlsl` node with `node` and `hlsl`.
+- `remove_node`: Delete a graph node alias with `node`.
+
+This is intentionally a small protocol, not a raw UObject editor. Re-export after patching so the next AI turn sees the current graph and fresh aliases. Use graph aliases from `export_niagara_system`; if you just created a local module, re-export before detailed internal edits.
+
+`remove_niagara_module(session_id, module)`
+
+Remove a Niagara module by exported module alias. This uses a minimal parameter-map chain edit and then requires re-export.
+
+`move_niagara_module(session_id, module, target_stack, target_index)`
+
+Move a module structurally. Current implementation inserts the same module script at the target and removes the old node, so input overrides may need to be reapplied after re-export.
+
+`set_niagara_module_enabled(session_id, module, enabled)`
+
+Enable or disable a Niagara module by exported module alias. Re-export to verify final stack state.
+
+`niagara(action="list_module_inputs", params={"session_id":"...","module":"..."})`
+
+List editable stack inputs for one exported module alias. Input names may include short names such as `Velocity` or full names such as `Module.Velocity`. The response includes `value_kind`, enum values when available, static-switch hints, hidden state, override pin defaults, link counts, and pin type metadata. For modules like `SampleSkeletalMesh`, inspect this output before changing mesh sampling behavior so inputs such as `Mesh Sampling Type` are not missed.
+
+`get_niagara_module_input_override(session_id, module, input)`
+
+Inspect the current override pin, linked nodes, object asset, data interface, and special fields such as `volume_texture` and `texture_user_parameter`.
+
+`set_niagara_module_input(session_id, module, input, value)`
+
+Set a simple default string on a module input override pin. Prefer binding tools for linked user parameters or object/data-interface values.
+
+`set_niagara_module_object_input(session_id, module, input, asset_path)`
+
+Set an object/data-interface module input by asset path. For `UNiagaraDataInterfaceVolumeTexture`, this also updates the DI's internal `Texture` pointer when possible.
+
+`bind_niagara_module_input_to_user_param(session_id, module, input, user_parameter, binding_kind="auto", default_asset_path="")`
+
+Expose a module input as a linked `User.*` parameter. For ordinary scalar/vector/color values this creates the exposed user parameter if missing and links the module input through a `ParameterMapGet`. For `UNiagaraDataInterfaceVolumeTexture`, pass `binding_kind="volume_texture"` or provide `default_asset_path`; this keeps the module input as a Volume Texture DI, sets `TextureUserParameter`, and optionally assigns a default texture asset.
+
+`search_niagara_module_semantics(query="", limit=10)` and `get_niagara_module_semantics(asset)`
+
+Query cached semantic notes for common/native Niagara modules without expanding full module graphs.
+
+Semantic catalog entries use the following AI-facing shape:
+
+- `inputs`: editable or important module inputs with compact type, purpose, and normal usage.
+- `outputs`: values the module contributes to downstream Niagara execution.
+- `writes`: Niagara attributes or parameter-map values the module mutates.
+- `side_effects`: runtime behavior that is not obvious from a pin list, such as spawning, event generation, or force accumulation.
+- `input_value_kinds`: accepted value styles such as literal, linked user parameter, dynamic input, object asset, or data interface.
+- `critical_inputs`: inputs that decide whether the module actually satisfies the user goal.
+- `critical_static_switches`: hidden or mode-selecting inputs that may choose a completely different internal branch.
+- `stack_requirements`: companion modules, stack placement, or ordering constraints.
+- `required_followups`: checks to run after adding or mutating the module.
+- `common_edits`: high-level editing recipes and the input names usually involved.
+- `pitfalls`: common reasons an edit appears to do nothing or creates misleading output.
+
+## Catalog Values
+
+Supported `usage` values:
+
+- `module`
+- `dynamic_input`
+- `function`
+
+Supported `source` values:
+
+- `all`
+- `native`
+- `project`
+- `plugin`
+
+## Editing Rules
+
+- Always export first; do not invent module aliases.
+- For from-scratch systems, prefer `niagara(action="add_default_emitter")` over searching for an emitter template.
+- Always search before adding a Niagara module; do not invent script asset paths.
+- Treat `niagara(action="search_module")` as the Add-menu source of truth. If a module does not appear there, assume it is unavailable, hidden, obsolete, deprecated, or the wrong usage unless proven otherwise.
+- Read `inputs`, `outputs`, `writes`, `side_effects`, `input_value_kinds`, `critical_inputs`, `critical_static_switches`, `stack_requirements`, `required_followups`, `common_edits`, `pitfalls`, and `notes` in search results before adding or setting parameters.
+- Treat exported `module.input_summary.requires_input_review=true` as a hard stop: call `niagara(action="list_module_inputs")` and inspect hidden/static-switch inputs before choosing values.
+- Treat `session_id` and aliases as volatile editor-memory handles.
+- Re-export after any structural edit: add emitter, add module, remove module, move module, or enable/disable module.
+- Re-export after `niagara(action="create_local_module")` and after `niagara(action="patch_module_graph")`.
+- Call `niagara(action="compile_status", params={"asset_path":"...","wait":true})` after structural edits, module graph patches, and input/user parameter mutations. If `has_errors` is true, fix the reported script/stage before saving or claiming success.
+- Use `force=true` only when you need to refresh stale compile data; otherwise prefer `wait=true` to avoid unnecessary recompiles.
+- Use stack aliases from export, such as `system.system_spawn`, `system.system_update`, `e0.emitter_spawn`, `e0.emitter_update`, `e0.particle_spawn`, and `e0.particle_update`.
+- Do not set module inputs by guessing. After adding a module, call `niagara(action="list_module_inputs")` and inspect `value_kind`, `enum_values`, `is_static_switch`, `default_value`, and `link_count` before setting inputs.
+- For modules that can branch between mesh surface and skeleton/bone/socket sampling, explicitly set the static switch shown by `list_module_inputs`; adding the module alone is not enough.
+- Use `bind_niagara_module_input_to_user_param` for scalar/vector/color inputs.
+- Use `bind_niagara_module_input_to_user_param(..., binding_kind="volume_texture", default_asset_path="...")` for Volume Texture DI texture exposure.
+- Use `set_niagara_module_object_input` for direct object/data-interface asset assignment.
+- Save explicitly with `asset(action="save")` after successful mutations.
+- If a new bridge command returns `Unknown command`, rebuild succeeded but the editor is still running an old DLL; restart Unreal Editor or reload the plugin.
+- If existing modules cannot directly express the requested behavior, do not force unrelated modules together. Prefer `niagara(action="create_local_module")` plus `niagara(action="patch_module_graph")`.
+
+## Local Module Guidance
+
+Use a local/scratch module instead of ad-hoc module stacking when the requested behavior is a custom rule, for example:
+
+- Pairwise particle-to-particle attraction or nearest-neighbor logic.
+- Custom assignment such as "sample mesh location, then write a derived value to `Particles.Position` and a custom attribute".
+- Per-particle rules based on ID, sorted neighbor lists, custom HLSL, or simulation-stage data interfaces.
+- Effects that require branching or loops that are not exposed by existing module inputs.
+
+Use `niagara(action="create_local_module")` first, re-export to get the module alias, then use `niagara(action="patch_module_graph")` for internal graph edits. Keep patches small and re-export between batches when pin names or node aliases are uncertain.
+
+## Interpretation Notes
+
+- Niagara Fluids systems often hide most behavior in ordered simulation stages. Explain those as GPU compute passes, not as ordinary particle update nodes.
+- Attribute Reader systems often store neighbor IDs during spawn and read positions/attributes in simulation stages.
+- Compact graphs omit reroute nodes and truncate large module internals; use module inputs and semantic catalog notes before dumping full graphs into context.

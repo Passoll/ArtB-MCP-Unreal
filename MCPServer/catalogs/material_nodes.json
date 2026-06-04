@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "domain": "material",
+  "description": "Stable AI-facing catalog for commonly used Unreal Material expression nodes. Use this catalog before creating or editing material graph nodes.",
+  "entries": [
+    {
+      "kind": "MaterialExpressionAdd",
+      "compact_kind": "+",
+      "display": "Add",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionAdd",
+      "inputs": [
+        {"name": "A", "compact": "a", "type": "float_or_vector"},
+        {"name": "B", "compact": "b", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Adds A and B component-wise."
+    },
+    {
+      "kind": "MaterialExpressionSubtract",
+      "compact_kind": "-",
+      "display": "Subtract",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionSubtract",
+      "inputs": [
+        {"name": "A", "compact": "a", "type": "float_or_vector"},
+        {"name": "B", "compact": "b", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Computes A - B component-wise."
+    },
+    {
+      "kind": "MaterialExpressionMultiply",
+      "compact_kind": "*",
+      "display": "Multiply",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionMultiply",
+      "inputs": [
+        {"name": "A", "compact": "a", "type": "float_or_vector"},
+        {"name": "B", "compact": "b", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Multiplies A and B component-wise."
+    },
+    {
+      "kind": "MaterialExpressionDivide",
+      "compact_kind": "/",
+      "display": "Divide",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionDivide",
+      "inputs": [
+        {"name": "A", "compact": "a", "type": "float_or_vector"},
+        {"name": "B", "compact": "b", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Computes A / B component-wise. Validate divisor defaults before applying patches."
+    },
+    {
+      "kind": "MaterialExpressionLinearInterpolate",
+      "compact_kind": "lerp",
+      "display": "Linear Interpolate",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionLinearInterpolate",
+      "inputs": [
+        {"name": "A", "compact": "a", "type": "float_or_vector"},
+        {"name": "B", "compact": "b", "type": "float_or_vector"},
+        {"name": "Alpha", "compact": "alpha", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Blends from A to B by Alpha."
+    },
+    {
+      "kind": "MaterialExpressionClamp",
+      "compact_kind": "clamp",
+      "display": "Clamp",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionClamp",
+      "inputs": [
+        {"name": "Input", "compact": "Input", "type": "float_or_vector"},
+        {"name": "Min", "compact": "Min", "type": "float_or_vector"},
+        {"name": "Max", "compact": "Max", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [
+        {"name": "MinDefault", "type": "float"},
+        {"name": "MaxDefault", "type": "float"}
+      ],
+      "notes": "Clamps Input to Min/Max. Min and Max may be pins or default properties."
+    },
+    {
+      "kind": "MaterialExpressionSaturate",
+      "compact_kind": "Saturate",
+      "display": "Saturate",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionSaturate",
+      "inputs": [
+        {"name": "Input", "compact": "Input", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Clamp shortcut to 0..1."
+    },
+    {
+      "kind": "MaterialExpressionOneMinus",
+      "compact_kind": "1-x",
+      "display": "OneMinus",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionOneMinus",
+      "inputs": [
+        {"name": "Input", "compact": "Input", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Computes 1 - Input."
+    },
+    {
+      "kind": "MaterialExpressionAbs",
+      "compact_kind": "Abs",
+      "display": "Abs",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionAbs",
+      "inputs": [
+        {"name": "Input", "compact": "Input", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Absolute value."
+    },
+    {
+      "kind": "MaterialExpressionFrac",
+      "compact_kind": "Frac",
+      "display": "Frac",
+      "category": "math",
+      "create_class": "/Script/Engine.MaterialExpressionFrac",
+      "inputs": [
+        {"name": "Input", "compact": "Input", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [],
+      "notes": "Returns fractional part of Input."
+    },
+    {
+      "kind": "MaterialExpressionScalarParameter",
+      "compact_kind": "param",
+      "display": "Scalar Parameter",
+      "category": "parameter",
+      "create_class": "/Script/Engine.MaterialExpressionScalarParameter",
+      "inputs": [],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float"}
+      ],
+      "properties": [
+        {"name": "ParameterName", "type": "name", "required": true},
+        {"name": "DefaultValue", "type": "float"}
+      ],
+      "notes": "Use set_parameter for existing parameters when possible. Use add_node only when introducing a new parameter."
+    },
+    {
+      "kind": "MaterialExpressionVectorParameter",
+      "compact_kind": "vparam",
+      "display": "Vector Parameter",
+      "category": "parameter",
+      "create_class": "/Script/Engine.MaterialExpressionVectorParameter",
+      "inputs": [],
+      "outputs": [
+        {"name": "RGB", "compact": "rgb", "type": "float3"},
+        {"name": "RGBA", "compact": "rgba", "type": "float4"},
+        {"name": "R", "compact": "r", "type": "float"},
+        {"name": "G", "compact": "g", "type": "float"},
+        {"name": "B", "compact": "b", "type": "float"},
+        {"name": "A", "compact": "a", "type": "float"}
+      ],
+      "properties": [
+        {"name": "ParameterName", "type": "name", "required": true},
+        {"name": "DefaultValue", "type": "linear_color"}
+      ],
+      "notes": "Outputs individual channels and RGB/RGBA vectors."
+    },
+    {
+      "kind": "MaterialExpressionTextureSample",
+      "compact_kind": "tex",
+      "display": "Texture Sample",
+      "category": "texture",
+      "create_class": "/Script/Engine.MaterialExpressionTextureSample",
+      "inputs": [
+        {"name": "Coordinates", "compact": "Coordinates", "type": "float2"}
+      ],
+      "outputs": [
+        {"name": "RGB", "compact": "rgb", "type": "float3"},
+        {"name": "RGBA", "compact": "rgba", "type": "float4"},
+        {"name": "R", "compact": "r", "type": "float"},
+        {"name": "G", "compact": "g", "type": "float"},
+        {"name": "B", "compact": "b", "type": "float"},
+        {"name": "A", "compact": "a", "type": "float"}
+      ],
+      "properties": [
+        {"name": "Texture", "type": "asset_path", "required": true},
+        {"name": "SamplerType", "type": "enum"}
+      ],
+      "notes": "Texture asset must exist. SamplerType may need to match texture usage."
+    },
+    {
+      "kind": "MaterialExpressionConstant",
+      "compact_kind": "const",
+      "display": "Constant",
+      "category": "constant",
+      "create_class": "/Script/Engine.MaterialExpressionConstant",
+      "inputs": [],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float"}
+      ],
+      "properties": [
+        {"name": "R", "type": "float"}
+      ],
+      "notes": "Single float constant."
+    },
+    {
+      "kind": "MaterialExpressionConstant3Vector",
+      "compact_kind": "const",
+      "display": "Constant3Vector",
+      "category": "constant",
+      "create_class": "/Script/Engine.MaterialExpressionConstant3Vector",
+      "inputs": [],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float3"}
+      ],
+      "properties": [
+        {"name": "Constant", "type": "linear_color"}
+      ],
+      "notes": "RGB constant."
+    },
+    {
+      "kind": "MaterialExpressionComponentMask",
+      "compact_kind": "ComponentMask",
+      "display": "Component Mask",
+      "category": "vector",
+      "create_class": "/Script/Engine.MaterialExpressionComponentMask",
+      "inputs": [
+        {"name": "Input", "compact": "Input", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "float_or_vector"}
+      ],
+      "properties": [
+        {"name": "R", "type": "bool"},
+        {"name": "G", "type": "bool"},
+        {"name": "B", "type": "bool"},
+        {"name": "A", "type": "bool"}
+      ],
+      "notes": "Selects vector channels."
+    },
+    {
+      "kind": "MaterialExpressionAppendVector",
+      "compact_kind": "AppendVector",
+      "display": "Append Vector",
+      "category": "vector",
+      "create_class": "/Script/Engine.MaterialExpressionAppendVector",
+      "inputs": [
+        {"name": "A", "compact": "a", "type": "float_or_vector"},
+        {"name": "B", "compact": "b", "type": "float_or_vector"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "vector"}
+      ],
+      "properties": [],
+      "notes": "Concatenates components from A and B."
+    },
+    {
+      "kind": "MaterialExpressionMaterialFunctionCall",
+      "compact_kind": "func",
+      "display": "Material Function Call",
+      "category": "function",
+      "create_class": "/Script/Engine.MaterialExpressionMaterialFunctionCall",
+      "inputs": "dynamic_from_function_interface",
+      "outputs": "dynamic_from_function_interface",
+      "properties": [
+        {"name": "MaterialFunction", "type": "asset_path", "required": true}
+      ],
+      "notes": "Call describe_material_function_interface(function_path) before creating or connecting this node."
+    },
+    {
+      "kind": "MaterialExpressionStaticSwitchParameter",
+      "compact_kind": "StaticSwitchParameter",
+      "display": "Static Switch Parameter",
+      "category": "parameter",
+      "create_class": "/Script/Engine.MaterialExpressionStaticSwitchParameter",
+      "inputs": [
+        {"name": "True", "compact": "True", "type": "any"},
+        {"name": "False", "compact": "False", "type": "any"}
+      ],
+      "outputs": [
+        {"name": "", "compact": "out", "type": "any"}
+      ],
+      "properties": [
+        {"name": "ParameterName", "type": "name", "required": true},
+        {"name": "DefaultValue", "type": "bool"}
+      ],
+      "notes": "Static switch changes shader permutations. Prefer previewing patches before applying."
+    }
+  ]
+}
