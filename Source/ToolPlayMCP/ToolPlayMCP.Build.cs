@@ -36,6 +36,7 @@ public class ToolPlayMCP : ModuleRules
 				"Niagara",
 				"NiagaraCore",
 				"NiagaraEditor",
+				"NiagaraShader",
 				"Projects",
 				"Sockets",
 				"ToolMenus",

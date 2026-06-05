@@ -30,6 +30,7 @@ public:
 	static bool ListModuleInputs(const FString& SessionId, const FString& ModuleAlias, FString& OutJson, FString& OutError);
 	static bool GetModuleInputOverride(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, FString& OutJson, FString& OutError);
 	static bool SetModuleInput(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& Value, FString& OutJson, FString& OutError);
+	static bool SetModuleStaticSwitch(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& Value, FString& OutJson, FString& OutError);
 	static bool SetModuleObjectInput(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& AssetPath, FString& OutJson, FString& OutError);
 	static bool BindModuleInputToUserParameter(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& UserParameter, FString& OutJson, FString& OutError);
 	static bool BindSkeletalMeshInputToUserParameter(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& UserParameter, const FString& DefaultAssetPath, FString& OutJson, FString& OutError);
@@ -38,6 +39,7 @@ public:
 	static bool ListInputs(const FString& SessionId, const FString& ModuleAlias, FString& OutJson, FString& OutError) { return ListModuleInputs(SessionId, ModuleAlias, OutJson, OutError); }
 	static bool GetInputOverride(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, FString& OutJson, FString& OutError) { return GetModuleInputOverride(SessionId, ModuleAlias, InputName, OutJson, OutError); }
 	static bool SetInput(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& Value, FString& OutJson, FString& OutError) { return SetModuleInput(SessionId, ModuleAlias, InputName, Value, OutJson, OutError); }
+	static bool SetStaticSwitch(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& Value, FString& OutJson, FString& OutError) { return SetModuleStaticSwitch(SessionId, ModuleAlias, InputName, Value, OutJson, OutError); }
 	static bool SetObjectInput(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& AssetPath, FString& OutJson, FString& OutError) { return SetModuleObjectInput(SessionId, ModuleAlias, InputName, AssetPath, OutJson, OutError); }
 	static bool BindInputToUserParameter(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& UserParameter, FString& OutJson, FString& OutError) { return BindModuleInputToUserParameter(SessionId, ModuleAlias, InputName, UserParameter, OutJson, OutError); }
 };

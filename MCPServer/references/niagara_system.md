@@ -31,9 +31,12 @@ Module graphs are intentionally compressed. `Reroute` nodes are skipped in compa
 6. Read the search result's `summary`, `inputs`, `outputs`, `writes`, `side_effects`, `input_value_kinds`, `critical_inputs`, `critical_static_switches`, `stack_requirements`, `required_followups`, `common_edits`, `preferred_stacks`, `pitfalls`, and `notes` before adding the module.
 7. Add/remove/move/enable modules by alias, then re-export because aliases are volatile after structural edits.
 8. Inspect the added module with `niagara(action="list_module_inputs")`; do not set inputs that were not found by search semantics or by this input list.
-9. Mutate parameters with set/bind tools.
-10. Call `niagara(action="compile_status", params={"asset_path":"...","wait":true})` after edits and inspect `diagnostics.has_errors` plus `diagnostics.scripts[].compile_errors`.
-11. Save explicitly with `asset(action="save", params={"asset_path":"..."})`.
+9. Mutate parameters with set/bind tools. If `list_module_inputs` marks an input as `source="static_switch_pin"` or `is_static_switch=true`, use `niagara(action="set_static_switch")` instead of `set_module_input`.
+10. Call `niagara(action="diagnostics", params={"asset_path":"...","force":true,"wait":true})` after edits and inspect `diagnostics.summary.ok_to_save_or_claim_success`, `blocking_reasons`, `compile`, and `stack`.
+11. Use `compile_status` or `stack_issues` only when debugging one diagnostic layer in isolation.
+12. Save explicitly with `asset(action="save", params={"asset_path":"..."})` only after explicit save approval.
+
+For existing Niagara assets, steps that mutate the system require user approval first. State the exact asset path, intended edits, and why direct modification is needed. Prefer creating a new Niagara System or duplicating an existing one when the user asks for a new effect, prototype, or variant.
 
 Example:
 
@@ -45,9 +48,10 @@ niagara(action="add_module", params={"session_id":session_id,"target_stack":"e0.
 niagara(action="export", params={"asset_path":"/Game/Fx/MySystem.MySystem"})
 niagara(action="list_module_inputs", params={"session_id":session_id,"module":"e0.particle_update.m1"})
 niagara(action="get_module_input_override", params={"session_id":session_id,"module":"e0.particle_update.m1","input":"Some Input"})
+niagara(action="set_static_switch", params={"session_id":session_id,"module":"e0.particle_spawn.m1","input":"Mesh Sampling Type","value":"Surface (Triangles)"})
 niagara(action="bind_module_input", params={"session_id":session_id,"module":"e0.particle_update.m1","input":"Some Input","user_parameter":"User.SomeInput"})
 niagara(action="bind_module_input", params={"session_id":session_id,"module":"e0.particle_update.m1","input":"Noise Texture","user_parameter":"User.NoiseTexture","binding_kind":"volume_texture","default_asset_path":"/Engine/Path/T_Volume.T_Volume"})
-niagara(action="compile_status", params={"asset_path":"/Game/Fx/MySystem.MySystem","wait":true})
+niagara(action="diagnostics", params={"asset_path":"/Game/Fx/MySystem.MySystem","force":true,"wait":true})
 asset(action="save", params={"asset_path":"/Game/Fx/MySystem.MySystem"})
 ```
 
@@ -65,15 +69,30 @@ Export system stages, emitters, renderers, event handlers, simulation stages, or
 
 Each exported module includes `input_summary`. If `input_summary.requires_input_review` is true, inspect `input_summary.hidden_static_switches` and call `niagara(action="list_module_inputs")` before changing or explaining the module. Hidden static switches can change which internal branch executes; for example, `SkeletalMeshLocation` may sample bones/sockets instead of mesh surface unless `Mesh Sampling Type` is explicitly set to a surface/triangle/vertex mode.
 
+`niagara(action="diagnostics", params={"asset_path":"...","force":true,"wait":true})`
+
+Read combined Niagara diagnostics. This is the recommended post-edit validation tool. It returns:
+
+- `summary`: compact gate for AI workflows, including `ok_to_save_or_claim_success`, `has_errors`, `blocking_reasons`, compile counts, and stack issue counts.
+- `compile`: VM/script compile diagnostics for system scripts, emitter scripts, event handlers, and simulation stages. GPU HLSL compiler failures are returned per script as `shader_compile_errors` and also counted in `compile_errors`.
+- `stack`: stack/module dependency diagnostics, including unmet module dependencies that may not appear as VM compile errors.
+
+Niagara mutation tools request compilation but do not wait for or include the final compile result in the mutation response. Treat mutation success as "the edit was applied and compile was requested", not as "the system compiled successfully". Always call diagnostics with `force=true` and `wait=true` before saving or claiming success.
+
 `niagara(action="compile_status", params={"asset_path":"...","force":false,"wait":true})`
 
-Read Niagara System compile diagnostics in a compact, AI-readable shape. Use this after any Niagara mutation. Set `wait=true` to wait for pending script/GPU compilation before reading status. Set `force=true` when the system may have stale compile data and you need Unreal to request a fresh compile.
+Read only Niagara System compile diagnostics in a compact, AI-readable shape. Prefer `diagnostics` after edits; use this when debugging compile state only. Set `wait=true` to wait for pending script/GPU compilation before reading status. Set `force=true` when the system may have stale compile data and you need Unreal to request a fresh compile.
 
 The response includes:
 
 - `diagnostics.status`: worst script status across system scripts, emitter scripts, event handlers, and simulation stages.
-- `diagnostics.has_errors` / `has_warnings`: quick gates for automated repair loops.
-- `diagnostics.scripts[]`: one entry per script with `scope`, `emitter`, `stage`, `usage`, `status`, and `compile_errors`.
+- `diagnostics.compile_ready`: false when scripts are still unknown, dirty, or being created.
+- `diagnostics.has_errors`, `diagnostics.has_warnings`, and `diagnostics.has_blocking_status`: quick gates for automated repair loops.
+- `diagnostics.scripts[]`: one entry per script with `scope`, `emitter`, `stage`, `usage`, `status`, `compile_errors`, and `shader_compile_errors`.
+
+`niagara(action="stack_issues", params={"asset_path":"..."})`
+
+Read only stack/module dependency diagnostics. This catches editor stack issues such as "The module has unmet dependencies" that are generated by Niagara's stack dependency validation and may not appear as VM compile errors. Prefer `diagnostics` after edits; use this when debugging stack state only.
 
 `create_niagara_system(package_path, asset_name, template_asset_path="")`
 
@@ -89,6 +108,14 @@ Add an existing Niagara Emitter asset to a system. Re-export after adding to get
 
 Add the Niagara editor Minimal Emitter configured in `UNiagaraEditorSettings::DefaultEmptyEmitter`. Use this for from-scratch systems instead of searching for a random emitter template. Re-export after adding to get `e0.*` stack aliases. If the project has no Minimal Emitter configured, the tool reports a clear error and the user should configure Project Settings > Plugins > Niagara > Minimal Emitter or explicitly provide an emitter asset.
 
+`niagara(action="set_emitter_sim_target", params={"system_asset_path":"...","emitter":"e0","sim_target":"GPU"})`
+
+Set one exported emitter's simulation target to CPU or GPU. Accepted `sim_target` values include `CPU`, `CPUSim`, `GPU`, and `GPUComputeSim`. This edits emitter data, uses an editor transaction, marks the system dirty, and requests a compile. Re-export and run diagnostics after changing sim target because module support, renderer behavior, and data access can differ between CPU and GPU simulation.
+
+`niagara(action="configure_sprite_renderer", params={"system_asset_path":"...","emitter":"e0","renderer_index":0,"facing_mode":"FaceCamera","alignment":"VelocityAligned","pivot_u":0.5,"pivot_v":1.0})`
+
+Configure a Sprite Renderer on an emitter. The tool currently supports `FacingMode`, `Alignment`, and `PivotInUVSpace`; it does not edit every renderer property. `renderer_index` indexes the emitter's exported `renderers` array and must point to a Sprite Renderer. Accepted facing values include `FaceCamera`, `FaceCameraPlane`, `CustomFacingVector`, `FaceCameraDistanceBlend`, and `Automatic`. Accepted alignment values include `Unaligned`, `VelocityAligned`, and `CustomAlignment`.
+
 `niagara(action="add_module", params={"session_id":"...","target_stack":"...","script_asset_path":"...","target_index":-1,"suggested_name":""})`
 
 Insert a Niagara module script into a stack alias such as `system.system_update`, `e0.particle_spawn`, or `e0.particle_update`. Use only script paths returned by `niagara(action="search_module")`, a documented recipe, or an existing exported system. Re-export after insertion to get the new module alias, then call `niagara(action="list_module_inputs")` before setting parameters.
@@ -101,13 +128,33 @@ Create a Niagara scratch/local module script, add it to the owning system's scra
 
 Patch an exported Niagara module's internal graph. Supported operation types:
 
-- `add_node`: Add `custom_hlsl`, `op`, or `function_call` nodes. `custom_hlsl` accepts `hlsl`; `op` accepts `op_name`; `function_call` accepts `script_asset_path`.
+- `add_node`: Add `custom_hlsl`, `op`, or `function_call` nodes. `custom_hlsl` accepts `hlsl`; optional `script_usage` can be `function` or `dynamic_input`; optional `output_type` is used when `script_usage="dynamic_input"`. `op` accepts `op_name`; `function_call` accepts `script_asset_path`.
+- `add_node`: Also supports `parameter_map_set` for writing values back to the Niagara parameter map.
+- `add_dynamic_pin`: Add a named input or output pin to a Niagara dynamic-pin node, including `parameter_map_set` and `custom_hlsl`. Fields are `node`, `direction`, `name`, and `value_type`. Common `value_type` values are `float`, `bool`, `int`, `vec2`, `vec3`, `position`, `vec4`, `color`, `quat`, and `parameter_map`. For `parameter_map_set`, use fully namespaced attribute names such as `Particles.Color`; do not use bare names such as `Color`.
 - `connect`: Connect one output pin to one input pin with `from_node`, `from_pin`, `to_node`, and `to_pin`.
 - `disconnect`: Break one specified edge with the same pin fields as `connect`.
 - `set_custom_hlsl`: Update a `custom_hlsl` node with `node` and `hlsl`.
 - `remove_node`: Delete a graph node alias with `node`.
 
 This is intentionally a small protocol, not a raw UObject editor. Re-export after patching so the next AI turn sees the current graph and fresh aliases. Use graph aliases from `export_niagara_system`; if you just created a local module, re-export before detailed internal edits.
+
+Example local-module writeback pattern:
+
+```json
+{
+  "ops": [
+    {"type":"add_node","node_kind":"parameter_map_set","alias":"write","x":400,"y":0},
+    {"type":"add_dynamic_pin","node":"write","direction":"input","name":"Particles.Color","value_type":"color"},
+    {"type":"connect","from_node":"color_calc","from_pin":"Color","to_node":"write","to_pin":"Particles.Color"}
+  ]
+}
+```
+
+Use `parameter_map_set` when the goal is to assign Niagara attributes such as `Particles.Color`, `Particles.Position`, `Particles.Velocity`, custom `Particles.*` values, or `Emitter.*` values. Use `custom_hlsl` for computing values, then write the result through `parameter_map_set`; a custom HLSL node by itself does not mutate particle attributes.
+
+For `custom_hlsl` nodes, every dynamic pin must be reflected in the node function signature. ToolPlayMCP refreshes this after `add_dynamic_pin`, but pin names still need to be valid HLSL identifiers such as `ColorOut`, `Fresnel`, or `FollowPosition`; do not use names with spaces, dots, or namespace separators on Custom HLSL pins. Namespaced Niagara attributes belong on `parameter_map_set` pins, not Custom HLSL pins.
+
+Custom HLSL text is inserted into Niagara-generated shader code. Do not paste a full function definition such as `void fresnel_calc(...) { ... }` into a Custom HLSL node unless the engine context explicitly supports that form. Prefer assignment/body snippets such as `ColorOut = ...; SizeOut = ...;`. After editing GPU Niagara code, run diagnostics and inspect both `compile_errors` and `shader_compile_errors`; GPU HLSL errors may reference `/Engine/Generated/NiagaraEmitterInstance.ush`.
 
 `remove_niagara_module(session_id, module)`
 
@@ -131,7 +178,11 @@ Inspect the current override pin, linked nodes, object asset, data interface, an
 
 `set_niagara_module_input(session_id, module, input, value)`
 
-Set a simple default string on a module input override pin. Prefer binding tools for linked user parameters or object/data-interface values.
+Set a simple default string on a module input override pin. Prefer binding tools for linked user parameters or object/data-interface values. The result includes `confirmed_override_pin`, `stored_default_value`, and `default_value_exact_match`; if the tool reports failure or cannot confirm the override pin, do not assume the value was applied.
+
+`niagara(action="set_static_switch", params={"session_id":"...","module":"...","input":"Mesh Sampling Type","value":"Surface (Triangles)"})`
+
+Set a Niagara module static switch pin. Use this for compile-time branch selectors returned by `list_module_inputs` with `source="static_switch_pin"` or `is_static_switch=true`, including hidden switches such as `Mesh Sampling Type`. Values may be enum display names, enum internal names, or numeric enum values when available. Re-export immediately after setting a static switch because the active internal branch can change.
 
 `set_niagara_module_object_input(session_id, module, input, asset_path)`
 
@@ -176,8 +227,13 @@ Supported `source` values:
 
 ## Editing Rules
 
+- Existing Niagara Systems and Emitters are read-only until the user explicitly approves a write to that asset in the current conversation.
+- Prefer creating a new Niagara System or duplicating/copying an existing system before edits. Do not modify an existing effect just because it can satisfy the request after changes.
+- Export, diagnostics, compile status, stack issue checks, module search, semantic search, and input listing are read-only. Create/add/remove/move/patch/set/bind/save actions are writes and require approval for existing assets.
 - Always export first; do not invent module aliases.
 - For from-scratch systems, prefer `niagara(action="add_default_emitter")` over searching for an emitter template.
+- Use `set_emitter_sim_target` for CPU/GPU simulation target changes instead of trying to patch module graphs.
+- Use `configure_sprite_renderer` for Sprite Renderer facing, alignment, and pivot. For other renderer properties, add a dedicated bridge action rather than guessing raw property writes.
 - Always search before adding a Niagara module; do not invent script asset paths.
 - Treat `niagara(action="search_module")` as the Add-menu source of truth. If a module does not appear there, assume it is unavailable, hidden, obsolete, deprecated, or the wrong usage unless proven otherwise.
 - Read `inputs`, `outputs`, `writes`, `side_effects`, `input_value_kinds`, `critical_inputs`, `critical_static_switches`, `stack_requirements`, `required_followups`, `common_edits`, `pitfalls`, and `notes` in search results before adding or setting parameters.
@@ -185,17 +241,57 @@ Supported `source` values:
 - Treat `session_id` and aliases as volatile editor-memory handles.
 - Re-export after any structural edit: add emitter, add module, remove module, move module, or enable/disable module.
 - Re-export after `niagara(action="create_local_module")` and after `niagara(action="patch_module_graph")`.
-- Call `niagara(action="compile_status", params={"asset_path":"...","wait":true})` after structural edits, module graph patches, and input/user parameter mutations. If `has_errors` is true, fix the reported script/stage before saving or claiming success.
+- Mutation results may include `compile_requested=true` and `compile_result_included=false`. This means the tool requested Unreal compilation asynchronously; it does not mean compile succeeded.
+- Niagara mutation tools must wrap user-visible edits in `FScopedTransaction`, call `Modify()` on the system, scripts, stack graphs, modules, pins, and data interfaces before mutation, and group multi-step stack/graph edits into one editor undo step.
+- For risky Niagara edits, prefer creating a new system or backup copy because stack compilation, save, or editor restart can make ordinary editor undo insufficient.
+- Call `niagara(action="diagnostics", params={"asset_path":"...","force":true,"wait":true})` after structural edits, module graph patches, and input/user parameter mutations. If `summary.ok_to_save_or_claim_success` is false, fix the reported compile or stack issue before saving or claiming success.
 - Use `force=true` only when you need to refresh stale compile data; otherwise prefer `wait=true` to avoid unnecessary recompiles.
 - Use stack aliases from export, such as `system.system_spawn`, `system.system_update`, `e0.emitter_spawn`, `e0.emitter_update`, `e0.particle_spawn`, and `e0.particle_update`.
 - Do not set module inputs by guessing. After adding a module, call `niagara(action="list_module_inputs")` and inspect `value_kind`, `enum_values`, `is_static_switch`, `default_value`, and `link_count` before setting inputs.
-- For modules that can branch between mesh surface and skeleton/bone/socket sampling, explicitly set the static switch shown by `list_module_inputs`; adding the module alone is not enough.
+- For modules that can branch between mesh surface and skeleton/bone/socket sampling, explicitly call `niagara(action="set_static_switch")` on the static switch shown by `list_module_inputs`; adding the module alone is not enough.
+- Do not use `set_niagara_module_input` for `source="static_switch_pin"` inputs. It writes ordinary override pins, not compile-time static switch pins.
 - Use `bind_niagara_module_input_to_user_param` for scalar/vector/color inputs.
 - Use `bind_niagara_module_input_to_user_param(..., binding_kind="volume_texture", default_asset_path="...")` for Volume Texture DI texture exposure.
 - Use `set_niagara_module_object_input` for direct object/data-interface asset assignment.
-- Save explicitly with `asset(action="save")` after successful mutations.
+- Save explicitly with `asset(action="save")` after successful approved mutations, and only when the user approved saving.
 - If a new bridge command returns `Unknown command`, rebuild succeeded but the editor is still running an old DLL; restart Unreal Editor or reload the plugin.
 - If existing modules cannot directly express the requested behavior, do not force unrelated modules together. Prefer `niagara(action="create_local_module")` plus `niagara(action="patch_module_graph")`.
+
+## Technical Patterns
+
+Use this section as the stable Niagara editing playbook. Prefer adding precise, reusable patterns here over relying on one-off agent memory.
+
+### Custom HLSL Snippets
+
+Niagara Custom HLSL nodes receive code that is inserted into Niagara-generated shader code. Treat the `hlsl` field as a snippet/body, not as a standalone C/HLSL file.
+
+Use assignment/body snippets:
+
+```hlsl
+float3 N = normalize(In_SpriteFacing);
+float3 V = normalize(In_CameraPosition - In_Position);
+float Fresnel = pow(saturate(1.0 - dot(N, V)), In_Power);
+Out_ColorOut = lerp(In_Pink, In_Blue, Fresnel);
+Out_SizeOut = float2(5.0, 15.0);
+```
+
+Do not paste full function definitions:
+
+```hlsl
+void fresnel_calc(float3 In_Position, out float4 Out_ColorOut)
+{
+    Out_ColorOut = float4(1, 0, 1, 1);
+}
+```
+
+Why: full function definitions can be inserted inside an already-generated function body and trigger GPU shader errors such as `function definition is not allowed here` in `/Engine/Generated/NiagaraEmitterInstance.ush`.
+
+When patching Custom HLSL through ToolPlayMCP:
+
+- Add dynamic input/output pins with valid HLSL identifiers only, such as `In_Position`, `In_Power`, `Out_ColorOut`, and `Out_SizeOut`.
+- Do not use namespaced Niagara attributes such as `Particles.Color` on Custom HLSL pins.
+- Write Niagara attributes through a downstream `parameter_map_set` node, for example `CustomHlsl.Out_ColorOut -> ParameterMapSet.Particles.Color`.
+- Run `niagara(action="diagnostics", params={"force":true,"wait":true})` after GPU Custom HLSL edits and inspect `shader_compile_errors` as well as `compile_errors`.
 
 ## Local Module Guidance
 

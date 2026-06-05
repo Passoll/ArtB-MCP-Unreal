@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mcp.server.fastmcp import FastMCP
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+else:
+    FastMCP = Any
 
 from toolplay_bridge import call_unreal_bridge
 
@@ -531,7 +534,9 @@ BLUEPRINT_ACTIONS = {
 
 NIAGARA_ACTIONS = {
     "export": lambda params: _call_typed("export_niagara_system", params, "niagara_system_export"),
+    "diagnostics": lambda params: _call_typed("get_niagara_diagnostics", params, "niagara_diagnostics"),
     "compile_status": lambda params: _call_typed("get_niagara_compile_status", params, "niagara_compile_status"),
+    "stack_issues": lambda params: _call_typed("get_niagara_stack_issues", params, "niagara_stack_issues"),
     "create_system": lambda params: _call_typed("create_niagara_system", params, "mutation_result"),
     "add_emitter": lambda params: _call_typed("add_niagara_emitter", params, "mutation_result"),
     "add_default_emitter": lambda params: _call_typed("add_niagara_default_emitter", params, "mutation_result"),
@@ -545,6 +550,7 @@ NIAGARA_ACTIONS = {
     "list_module_inputs": lambda params: _call_typed("list_niagara_module_inputs", params, "niagara_module_inputs"),
     "get_module_input_override": lambda params: _call_typed("get_niagara_module_input_override", params, "niagara_module_input_override"),
     "set_module_input": lambda params: _call_typed("set_niagara_module_input", params, "mutation_result"),
+    "set_static_switch": lambda params: _call_typed("set_niagara_static_switch", params, "mutation_result"),
     "set_module_object_input": lambda params: _call_typed("set_niagara_module_object_input", params, "mutation_result"),
     "bind_module_input": lambda params: _call_typed("bind_niagara_module_input_to_user_param", params, "mutation_result"),
     "search_module_semantics": _niagara_semantic_search,
@@ -645,12 +651,36 @@ BLUEPRINT_ACTION_SPECS = {
     "connect": _spec("Connect one Blueprint output pin to one input pin.", _schema({"session_id": _string(), "from_node": _string(), "from_pin": _string(), "to_node": _string(), "to_pin": _string()}, ["session_id", "from_node", "from_pin", "to_node", "to_pin"]), usage_topic="blueprint_graph", bridge_command="connect_blueprint_pins"),
     "disconnect": _spec("Break all links on one Blueprint pin.", _schema({"session_id": _string(), "node": _string(), "pin": _string()}, ["session_id", "node", "pin"]), usage_topic="blueprint_graph", bridge_command="disconnect_blueprint_pin"),
     "remove_node": _spec("Remove one Blueprint node by alias.", _schema({"session_id": _string(), "node": _string()}, ["session_id", "node"]), usage_topic="blueprint_graph", bridge_command="remove_blueprint_node"),
-    "compile": _spec("Compile a Blueprint asset after edits.", _schema({"asset_path": _string()}, ["asset_path"]), usage_topic="blueprint_graph", bridge_command="compile_blueprint", output_schema=_output_schema("blueprint_compile_result", {"status": _string(), "messages": _array()})),
+    "compile": _spec(
+        "Compile a Blueprint asset after edits and return compiler diagnostics.",
+        _schema({"asset_path": _string()}, ["asset_path"]),
+        usage_topic="blueprint_graph",
+        bridge_command="compile_blueprint",
+        output_schema=_output_schema(
+            "blueprint_compile_result",
+            {
+                "asset_path": _string(),
+                "compiled": _boolean(),
+                "success": _boolean(),
+                "status": _string(),
+                "error_count": _integer(),
+                "warning_count": _integer(),
+                "messages": _array(),
+            },
+        ),
+    ),
 }
 
 
 NIAGARA_ACTION_SPECS = {
     "export": _spec("Export a Niagara System summary plus compact module graphs.", _schema({"asset_path": _string()}, ["asset_path"]), usage_topic="niagara_system", bridge_command="export_niagara_system", output_schema=_output_schema("niagara_system_export", {"session_id": _string(), "emitters": _array(), "system_stages": _array(), "compile": {"type": "object"}})),
+    "diagnostics": _spec(
+        "Read combined Niagara diagnostics: VM/script compile status plus stack/module dependency issues. Prefer this after edits.",
+        _schema({"asset_path": _string(), "force": _boolean(True), "wait": _boolean(True)}, ["asset_path"]),
+        usage_topic="niagara_system",
+        bridge_command="get_niagara_diagnostics",
+        output_schema=_output_schema("niagara_diagnostics", {"diagnostics": {"type": "object"}}),
+    ),
     "compile_status": _spec(
         "Compile or read Niagara System script diagnostics after edits.",
         _schema({"asset_path": _string(), "force": _boolean(False), "wait": _boolean(True)}, ["asset_path"]),
@@ -658,19 +688,46 @@ NIAGARA_ACTION_SPECS = {
         bridge_command="get_niagara_compile_status",
         output_schema=_output_schema("niagara_compile_status", {"diagnostics": {"type": "object"}}),
     ),
+    "stack_issues": _spec(
+        "Read Niagara stack/module dependency issues such as unmet module dependencies that may not appear as VM compile errors.",
+        _schema({"asset_path": _string()}, ["asset_path"]),
+        usage_topic="niagara_system",
+        bridge_command="get_niagara_stack_issues",
+        output_schema=_output_schema("niagara_stack_issues", {"diagnostics": {"type": "object"}}),
+    ),
     "create_system": _spec("Create a Niagara System asset, optionally from a template system.", _schema({"package_path": _string(), "asset_name": _string(), "template_asset_path": _string()}, ["package_path", "asset_name"]), usage_topic="niagara_system", bridge_command="create_niagara_system", output_schema=_mutation_output_schema()),
     "add_emitter": _spec("Add an emitter asset to a Niagara System.", _schema({"system_asset_path": _string(), "emitter_asset_path": _string(), "emitter_name": _string()}, ["system_asset_path", "emitter_asset_path"]), usage_topic="niagara_system", bridge_command="add_niagara_emitter", output_schema=_mutation_output_schema()),
     "add_default_emitter": _spec("Add the Niagara editor Minimal Emitter to a system without searching for a template.", _schema({"system_asset_path": _string(), "emitter_name": _string()}, ["system_asset_path"]), usage_topic="niagara_system", bridge_command="add_niagara_default_emitter", output_schema=_mutation_output_schema()),
+    "set_emitter_sim_target": _spec("Set a Niagara emitter simulation target to CPU or GPU.", _schema({"system_asset_path": _string(), "emitter": _string(), "sim_target": _string()}, ["system_asset_path", "emitter", "sim_target"]), usage_topic="niagara_system", bridge_command="set_niagara_emitter_sim_target", output_schema=_mutation_output_schema()),
+    "configure_sprite_renderer": _spec(
+        "Configure a Niagara Sprite Renderer's facing mode, alignment, and pivot UV.",
+        _schema(
+            {
+                "system_asset_path": _string(),
+                "emitter": _string(),
+                "renderer_index": _integer(0),
+                "facing_mode": _string(),
+                "alignment": _string(),
+                "pivot_u": _number(),
+                "pivot_v": _number(),
+            },
+            ["system_asset_path", "emitter", "renderer_index", "facing_mode", "alignment", "pivot_u", "pivot_v"],
+        ),
+        usage_topic="niagara_system",
+        bridge_command="configure_niagara_sprite_renderer",
+        output_schema=_mutation_output_schema(),
+    ),
     "search_module": _spec("Search native/plugin/project Niagara module scripts and merge semantic catalog notes.", _schema({"query": _string(), "usage": _string(), "source": _string(), "limit": _integer(20)}), usage_topic="niagara_system", bridge_command="search_niagara_modules", output_schema=_counted_entries_schema("niagara_module_search")),
     "add_module": _spec("Insert a Niagara module script into an exported stack alias.", _schema({"session_id": _string(), "target_stack": _string(), "script_asset_path": _string(), "target_index": _integer(-1), "suggested_name": _string()}, ["session_id", "target_stack", "script_asset_path"]), usage_topic="niagara_system", bridge_command="add_niagara_module", output_schema=_mutation_output_schema()),
     "create_local_module": _spec("Create a scratch/local Niagara module and insert it into an exported stack alias.", _schema({"session_id": _string(), "target_stack": _string(), "target_index": _integer(-1), "module_name": _string()}, ["session_id", "target_stack", "module_name"]), usage_topic="niagara_system", bridge_command="create_niagara_local_module"),
-    "patch_module_graph": _spec("Patch an exported Niagara module internal graph.", _schema({"session_id": _string(), "module": _string(), "ops": _array()}, ["session_id", "module", "ops"]), usage_topic="niagara_system", bridge_command="apply_niagara_module_graph_patch"),
+    "patch_module_graph": _spec("Patch an exported Niagara module internal graph. Supports add_node, add_dynamic_pin, connect, disconnect, set_custom_hlsl, and remove_node.", _schema({"session_id": _string(), "module": _string(), "ops": _array()}, ["session_id", "module", "ops"]), usage_topic="niagara_system", bridge_command="apply_niagara_module_graph_patch"),
     "remove_module": _spec("Remove a Niagara module by exported module alias.", _schema({"session_id": _string(), "module": _string()}, ["session_id", "module"]), usage_topic="niagara_system", bridge_command="remove_niagara_module"),
     "move_module": _spec("Move a Niagara module to a stack/index.", _schema({"session_id": _string(), "module": _string(), "target_stack": _string(), "target_index": _integer(0)}, ["session_id", "module", "target_stack"]), usage_topic="niagara_system", bridge_command="move_niagara_module"),
     "set_module_enabled": _spec("Enable or disable a Niagara module by alias.", _schema({"session_id": _string(), "module": _string(), "enabled": _boolean()}, ["session_id", "module", "enabled"]), usage_topic="niagara_system", bridge_command="set_niagara_module_enabled"),
     "list_module_inputs": _spec("List editable inputs for an exported Niagara module alias.", _schema({"session_id": _string(), "module": _string()}, ["session_id", "module"]), usage_topic="niagara_system", bridge_command="list_niagara_module_inputs", output_schema=_output_schema("niagara_module_inputs", {"inputs": _array()})),
     "get_module_input_override": _spec("Inspect a Niagara module input override.", _schema({"session_id": _string(), "module": _string(), "input": _string()}, ["session_id", "module", "input"]), usage_topic="niagara_system", bridge_command="get_niagara_module_input_override", output_schema=_output_schema("niagara_module_input_override", {"input": _string(), "override": _any()})),
     "set_module_input": _spec("Set a simple Niagara module input override.", _schema({"session_id": _string(), "module": _string(), "input": _string(), "value": _string()}, ["session_id", "module", "input", "value"]), usage_topic="niagara_system", bridge_command="set_niagara_module_input"),
+    "set_static_switch": _spec("Set a Niagara module static switch pin, including hidden compile-time branch inputs such as Mesh Sampling Type.", _schema({"session_id": _string(), "module": _string(), "input": _string(), "value": _string()}, ["session_id", "module", "input", "value"]), usage_topic="niagara_system", bridge_command="set_niagara_static_switch", output_schema=_mutation_output_schema()),
     "set_module_object_input": _spec("Set a Niagara module object/data-interface input asset.", _schema({"session_id": _string(), "module": _string(), "input": _string(), "asset_path": _string()}, ["session_id", "module", "input", "asset_path"]), usage_topic="niagara_system", bridge_command="set_niagara_module_object_input"),
     "bind_module_input": _spec("Bind a Niagara module input to a User parameter.", _schema({"session_id": _string(), "module": _string(), "input": _string(), "user_parameter": _string(), "binding_kind": _string(), "default_asset_path": _string()}, ["session_id", "module", "input", "user_parameter"]), usage_topic="niagara_system", bridge_command="bind_niagara_module_input_to_user_param"),
     "search_module_semantics": _spec("Search the cached Niagara module semantic catalog.", _schema({"query": _string(), "limit": _integer(10)}), usage_topic="niagara_system", output_schema=_counted_entries_schema("niagara_module_semantic_search")),

@@ -16,10 +16,13 @@
 #include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Logging/TokenizedMessage.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "ScopedTransaction.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -111,6 +114,44 @@ namespace
 			Type += TEXT("[]");
 		}
 		return Type.IsEmpty() ? TEXT("unknown") : Type;
+	}
+
+	FString BlueprintStatusToString(EBlueprintStatus Status)
+	{
+		switch (Status)
+		{
+		case BS_Unknown:
+			return TEXT("unknown");
+		case BS_Dirty:
+			return TEXT("dirty");
+		case BS_Error:
+			return TEXT("error");
+		case BS_UpToDate:
+			return TEXT("up_to_date");
+		case BS_BeingCreated:
+			return TEXT("being_created");
+		case BS_UpToDateWithWarnings:
+			return TEXT("up_to_date_with_warnings");
+		default:
+			return TEXT("unknown");
+		}
+	}
+
+	FString MessageSeverityToString(EMessageSeverity::Type Severity)
+	{
+		switch (Severity)
+		{
+		case EMessageSeverity::Error:
+			return TEXT("error");
+		case EMessageSeverity::PerformanceWarning:
+			return TEXT("performance_warning");
+		case EMessageSeverity::Warning:
+			return TEXT("warning");
+		case EMessageSeverity::Info:
+			return TEXT("info");
+		default:
+			return TEXT("error");
+		}
 	}
 
 	bool ResolveBlueprintPinType(const FString& RawTypeName, FEdGraphPinType& OutPinType, FString& OutError)
@@ -573,9 +614,11 @@ bool FToolPlayMCPBlueprintService::AddFunctionCallNode(const FString& SessionId,
 		return false;
 	}
 
-	Graph->Modify();
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Add Blueprint Function Call Node")));
 	Blueprint->Modify();
+	Graph->Modify();
 	UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
+	Node->SetFlags(RF_Transactional);
 	Node->SetFromFunction(Function);
 	FinishPlacedNode(Graph, Node, PositionX, PositionY);
 	MarkBlueprintEdited(Blueprint);
@@ -603,9 +646,11 @@ bool FToolPlayMCPBlueprintService::AddCustomEventNode(const FString& SessionId, 
 		return false;
 	}
 
-	Graph->Modify();
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Add Blueprint Custom Event Node")));
 	Blueprint->Modify();
+	Graph->Modify();
 	UK2Node_CustomEvent* Node = NewObject<UK2Node_CustomEvent>(Graph);
+	Node->SetFlags(RF_Transactional);
 	Node->CustomFunctionName = FName(*EventName);
 	FinishPlacedNode(Graph, Node, PositionX, PositionY);
 	MarkBlueprintEdited(Blueprint);
@@ -639,6 +684,12 @@ bool FToolPlayMCPBlueprintService::SetPinDefault(const FString& SessionId, const
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Set Blueprint Pin Default")));
+	Blueprint->Modify();
+	if (UEdGraph* Graph = Node->GetGraph())
+	{
+		Graph->Modify();
+	}
 	Node->Modify();
 	Pin->Modify();
 	Pin->DefaultValue = DefaultValue;
@@ -681,7 +732,11 @@ bool FToolPlayMCPBlueprintService::ConnectPins(const FString& SessionId, const F
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Connect Blueprint Pins")));
+	Blueprint->Modify();
 	FromNode->GetGraph()->Modify();
+	FromNode->Modify();
+	ToNode->Modify();
 	FromPin->Modify();
 	ToPin->Modify();
 	const UEdGraphSchema* Schema = FromNode->GetGraph()->GetSchema();
@@ -718,7 +773,10 @@ bool FToolPlayMCPBlueprintService::DisconnectPin(const FString& SessionId, const
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Disconnect Blueprint Pin")));
+	Blueprint->Modify();
 	Node->GetGraph()->Modify();
+	Node->Modify();
 	Pin->Modify();
 	Pin->BreakAllPinLinks();
 	Node->GetGraph()->NotifyGraphChanged();
@@ -740,7 +798,10 @@ bool FToolPlayMCPBlueprintService::RemoveNode(const FString& SessionId, const FS
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Remove Blueprint Node")));
+	Blueprint->Modify();
 	Node->GetGraph()->Modify();
+	Node->Modify();
 	FBlueprintEditorUtils::RemoveNode(Blueprint, Node, true);
 	MarkBlueprintEdited(Blueprint);
 
@@ -759,9 +820,31 @@ bool FToolPlayMCPBlueprintService::CompileBlueprint(const FString& AssetPath, FS
 		return false;
 	}
 
-	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection);
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Compile Blueprint")));
+	Blueprint->Modify();
+
+	FCompilerResultsLog ResultsLog;
+	ResultsLog.bSilentMode = true;
+	ResultsLog.SetSourcePath(Blueprint->GetPathName());
+	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection, &ResultsLog);
+
+	TArray<TSharedPtr<FJsonValue>> Messages;
+	for (const TSharedRef<FTokenizedMessage>& Message : ResultsLog.Messages)
+	{
+		TSharedRef<FJsonObject> MessageObject = MakeShared<FJsonObject>();
+		MessageObject->SetStringField(TEXT("severity"), MessageSeverityToString(Message->GetSeverity()));
+		MessageObject->SetStringField(TEXT("message"), Message->ToText().ToString());
+		Messages.Add(MakeShared<FJsonValueObject>(MessageObject));
+	}
+
+	const bool bSuccess = ResultsLog.NumErrors == 0 && Blueprint->Status != BS_Error;
 	TSharedRef<FJsonObject> Root = BuildEditResult(TEXT("compile_blueprint"), Blueprint);
 	Root->SetBoolField(TEXT("compiled"), true);
+	Root->SetBoolField(TEXT("success"), bSuccess);
+	Root->SetStringField(TEXT("status"), BlueprintStatusToString(Blueprint->Status));
+	Root->SetNumberField(TEXT("error_count"), ResultsLog.NumErrors);
+	Root->SetNumberField(TEXT("warning_count"), ResultsLog.NumWarnings);
+	Root->SetArrayField(TEXT("messages"), Messages);
 	OutJson = ToCondensedJsonString(Root);
 	return true;
 }
@@ -802,6 +885,7 @@ bool FToolPlayMCPBlueprintService::AddMemberVariable(const FString& AssetPath, c
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Add Blueprint Member Variable")));
 	Blueprint->Modify();
 	if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, FName(*VariableName), PinType, DefaultValue))
 	{
@@ -843,6 +927,7 @@ bool FToolPlayMCPBlueprintService::SetMemberVariableDefault(const FString& Asset
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Set Blueprint Variable Default")));
 	Blueprint->Modify();
 	Blueprint->NewVariables[VariableIndex].DefaultValue = DefaultValue;
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
@@ -876,14 +961,16 @@ bool FToolPlayMCPBlueprintService::AddVariableGetNode(const FString& SessionId, 
 		return false;
 	}
 
-	Graph->Modify();
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Add Blueprint Variable Get Node")));
 	Blueprint->Modify();
+	Graph->Modify();
 	UK2Node_VariableGet* Node = Schema->SpawnVariableGetNode(FVector2D(PositionX, PositionY), Graph, FName(*VariableName), GetBlueprintVariableSource(Blueprint));
 	if (!Node)
 	{
 		OutError = FString::Printf(TEXT("Unable to spawn get node for '%s'."), *VariableName);
 		return false;
 	}
+	Node->SetFlags(RF_Transactional);
 	Graph->NotifyGraphChanged();
 	MarkBlueprintEdited(Blueprint);
 
@@ -916,14 +1003,16 @@ bool FToolPlayMCPBlueprintService::AddVariableSetNode(const FString& SessionId, 
 		return false;
 	}
 
-	Graph->Modify();
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Add Blueprint Variable Set Node")));
 	Blueprint->Modify();
+	Graph->Modify();
 	UK2Node_VariableSet* Node = Schema->SpawnVariableSetNode(FVector2D(PositionX, PositionY), Graph, FName(*VariableName), GetBlueprintVariableSource(Blueprint));
 	if (!Node)
 	{
 		OutError = FString::Printf(TEXT("Unable to spawn set node for '%s'."), *VariableName);
 		return false;
 	}
+	Node->SetFlags(RF_Transactional);
 	Graph->NotifyGraphChanged();
 	MarkBlueprintEdited(Blueprint);
 

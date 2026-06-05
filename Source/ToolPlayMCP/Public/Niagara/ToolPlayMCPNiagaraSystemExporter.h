@@ -11,4 +11,8 @@ public:
 	static bool ExportSystem(UNiagaraSystem* System, FString& OutJson, FString& OutError);
 	static bool ExportCompileStatusByPath(const FString& AssetPath, bool bForceCompile, bool bWaitForCompile, FString& OutJson, FString& OutError);
 	static bool ExportCompileStatus(UNiagaraSystem* System, bool bForceCompile, bool bWaitForCompile, FString& OutJson, FString& OutError);
+	static bool ExportStackIssuesByPath(const FString& AssetPath, FString& OutJson, FString& OutError);
+	static bool ExportStackIssues(UNiagaraSystem* System, FString& OutJson, FString& OutError);
+	static bool ExportDiagnosticsByPath(const FString& AssetPath, bool bForceCompile, bool bWaitForCompile, FString& OutJson, FString& OutError);
+	static bool ExportDiagnostics(UNiagaraSystem* System, bool bForceCompile, bool bWaitForCompile, FString& OutJson, FString& OutError);
 };

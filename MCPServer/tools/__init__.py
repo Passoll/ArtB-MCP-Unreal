@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+else:
+    FastMCP = Any
 
 from .action_tools import register_action_tools
 

@@ -6,12 +6,14 @@
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_Niagara.h"
 #include "Engine/SkeletalMesh.h"
 #include "NiagaraGraph.h"
 #include "NiagaraDataInterfaceSkeletalMesh.h"
 #include "NiagaraDataInterfaceVolumeTexture.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraEditorSettings.h"
+#include "NiagaraNode.h"
 #include "NiagaraNodeCustomHlsl.h"
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeFunctionCall.h"
@@ -22,6 +24,7 @@
 #include "NiagaraScriptSource.h"
 #include "NiagaraSystem.h"
 #include "NiagaraTypes.h"
+#include "ScopedTransaction.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/SoftObjectPath.h"
@@ -216,6 +219,9 @@ namespace
 		Root->SetStringField(TEXT("operation"), Operation);
 		Root->SetStringField(TEXT("asset_path"), System ? System->GetPathName() : FString());
 		Root->SetBoolField(TEXT("reexport_required"), true);
+		Root->SetBoolField(TEXT("compile_requested"), true);
+		Root->SetBoolField(TEXT("compile_result_included"), false);
+		Root->SetStringField(TEXT("validation_next_step"), TEXT("Call niagara diagnostics with force=true and wait=true before saving or claiming success."));
 		return Root;
 	}
 
@@ -545,7 +551,27 @@ namespace
 		const FNiagaraParameterHandle ModuleHandle(Input.GetName());
 		const FNiagaraParameterHandle AliasedHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleHandle, Module);
 		const FString AliasedName = AliasedHandle.GetParameterHandleString().ToString();
+
+		UEdGraphNode* OverrideNode = nullptr;
 		for (UEdGraphPin* Pin : Module->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input || Pin->LinkedTo.Num() != 1)
+			{
+				continue;
+			}
+			if (UEdGraphSchema_Niagara::PinToTypeDefinition(Pin) == FNiagaraTypeDefinition::GetParameterMapDef())
+			{
+				OverrideNode = Pin->LinkedTo[0] ? Pin->LinkedTo[0]->GetOwningNode() : nullptr;
+				break;
+			}
+		}
+
+		if (!OverrideNode || !OverrideNode->GetClass()->GetName().Contains(TEXT("ParameterMapSet")))
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* Pin : OverrideNode->Pins)
 		{
 			if (Pin && Pin->Direction == EGPD_Input && Pin->PinName.ToString().Equals(AliasedName, ESearchCase::IgnoreCase))
 			{
@@ -607,6 +633,110 @@ namespace
 
 		FCompileConstantResolver Resolver;
 		FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*Module, OutPins, OutHiddenPins, Resolver);
+	}
+
+	UEdGraphPin* FindStaticSwitchPin(UNiagaraNodeFunctionCall* Module, const FString& InputName, TSet<UEdGraphPin*>* OutHiddenPins = nullptr)
+	{
+		TArray<UEdGraphPin*> StaticSwitchPins;
+		TSet<UEdGraphPin*> HiddenStaticSwitchPins;
+		GetStaticSwitchPins(Module, StaticSwitchPins, HiddenStaticSwitchPins);
+		if (OutHiddenPins)
+		{
+			*OutHiddenPins = HiddenStaticSwitchPins;
+		}
+
+		for (UEdGraphPin* Pin : StaticSwitchPins)
+		{
+			if (!Pin)
+			{
+				continue;
+			}
+
+			const FString PinName = Pin->PinName.ToString();
+			if (PinName.Equals(InputName, ESearchCase::IgnoreCase))
+			{
+				return Pin;
+			}
+		}
+		return nullptr;
+	}
+
+	bool NormalizeBoolStaticSwitchValue(const FString& RawValue, FString& OutValue)
+	{
+		const FString CleanValue = RawValue.TrimStartAndEnd();
+		if (CleanValue.Equals(TEXT("true"), ESearchCase::IgnoreCase) || CleanValue.Equals(TEXT("1")) || CleanValue.Equals(TEXT("yes"), ESearchCase::IgnoreCase))
+		{
+			OutValue = TEXT("true");
+			return true;
+		}
+		if (CleanValue.Equals(TEXT("false"), ESearchCase::IgnoreCase) || CleanValue.Equals(TEXT("0")) || CleanValue.Equals(TEXT("no"), ESearchCase::IgnoreCase))
+		{
+			OutValue = TEXT("false");
+			return true;
+		}
+		return false;
+	}
+
+	bool NormalizeEnumStaticSwitchValue(const UEnum* Enum, const FString& RawValue, FString& OutValue)
+	{
+		if (!Enum)
+		{
+			return false;
+		}
+
+		const FString CleanValue = RawValue.TrimStartAndEnd();
+		for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+		{
+			const FString Name = Enum->GetNameStringByIndex(Index);
+			const FString FullName = Enum->GetNameByIndex(Index).ToString();
+			const FString DisplayName = Enum->GetDisplayNameTextByIndex(Index).ToString();
+			const FString ValueText = FString::Printf(TEXT("%lld"), Enum->GetValueByIndex(Index));
+			if (CleanValue.Equals(Name, ESearchCase::IgnoreCase) ||
+				CleanValue.Equals(FullName, ESearchCase::IgnoreCase) ||
+				CleanValue.Equals(DisplayName, ESearchCase::IgnoreCase) ||
+				CleanValue.Equals(ValueText, ESearchCase::IgnoreCase))
+			{
+				OutValue = Name;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool NormalizeStaticSwitchValue(const UEdGraphPin* Pin, const FString& RawValue, FString& OutValue, FString& OutError)
+	{
+		if (!Pin)
+		{
+			OutError = TEXT("Invalid static switch pin.");
+			return false;
+		}
+
+		if (const UEnum* Enum = Cast<UEnum>(Pin->PinType.PinSubCategoryObject.Get()))
+		{
+			if (NormalizeEnumStaticSwitchValue(Enum, RawValue, OutValue))
+			{
+				return true;
+			}
+
+			TArray<FString> AllowedValues;
+			for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+			{
+				AllowedValues.Add(FString::Printf(
+					TEXT("%s (%s)"),
+					*Enum->GetDisplayNameTextByIndex(Index).ToString(),
+					*Enum->GetNameStringByIndex(Index)));
+			}
+			OutError = FString::Printf(TEXT("Invalid enum value '%s' for static switch '%s'. Allowed: %s"), *RawValue, *Pin->PinName.ToString(), *FString::Join(AllowedValues, TEXT(", ")));
+			return false;
+		}
+
+		if (NormalizeBoolStaticSwitchValue(RawValue, OutValue))
+		{
+			return true;
+		}
+
+		OutValue = RawValue.TrimStartAndEnd();
+		return true;
 	}
 
 	TSharedRef<FJsonObject> BuildModuleInputSummary(UNiagaraNodeFunctionCall* Module)
@@ -746,10 +876,193 @@ namespace
 	{
 		FGraphNodeCreator<NodeType> NodeCreator(*Graph);
 		NodeType* Node = NodeCreator.CreateNode();
+		Node->SetFlags(RF_Transactional);
 		Node->NodePosX = X;
 		Node->NodePosY = Y;
 		NodeCreator.Finalize();
 		return Node;
+	}
+
+	UEdGraphNode* CreateNiagaraGraphNodeByClass(UNiagaraGraph* Graph, UClass* NodeClass, int32 X, int32 Y)
+	{
+		if (!Graph || !NodeClass || !NodeClass->IsChildOf(UEdGraphNode::StaticClass()))
+		{
+			return nullptr;
+		}
+
+		UEdGraphNode* Node = NewObject<UEdGraphNode>(Graph, NodeClass);
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		Node->SetFlags(RF_Transactional);
+		Node->NodePosX = X;
+		Node->NodePosY = Y;
+		Graph->AddNode(Node, false, false);
+		Node->CreateNewGuid();
+		Node->PostPlacedNewNode();
+		Node->AllocateDefaultPins();
+		return Node;
+	}
+
+	bool ResolveNiagaraPinType(const FString& TypeName, FNiagaraTypeDefinition& OutType, FString& OutError)
+	{
+		FString Normalized = TypeName.TrimStartAndEnd().ToLower();
+		Normalized.ReplaceInline(TEXT(" "), TEXT(""));
+		Normalized.ReplaceInline(TEXT("_"), TEXT(""));
+		Normalized.ReplaceInline(TEXT("-"), TEXT(""));
+
+		if (Normalized.IsEmpty() || Normalized == TEXT("float") || Normalized == TEXT("scalar") || Normalized == TEXT("double"))
+		{
+			OutType = FNiagaraTypeDefinition::GetFloatDef();
+			return true;
+		}
+		if (Normalized == TEXT("bool") || Normalized == TEXT("boolean"))
+		{
+			OutType = FNiagaraTypeDefinition::GetBoolDef();
+			return true;
+		}
+		if (Normalized == TEXT("int") || Normalized == TEXT("integer"))
+		{
+			OutType = FNiagaraTypeDefinition::GetIntDef();
+			return true;
+		}
+		if (Normalized == TEXT("vec2") || Normalized == TEXT("vector2") || Normalized == TEXT("vector2d") || Normalized == TEXT("float2"))
+		{
+			OutType = FNiagaraTypeDefinition::GetVec2Def();
+			return true;
+		}
+		if (Normalized == TEXT("vec3") || Normalized == TEXT("vector") || Normalized == TEXT("vector3") || Normalized == TEXT("float3"))
+		{
+			OutType = FNiagaraTypeDefinition::GetVec3Def();
+			return true;
+		}
+		if (Normalized == TEXT("position"))
+		{
+			OutType = FNiagaraTypeDefinition::GetPositionDef();
+			return true;
+		}
+		if (Normalized == TEXT("vec4") || Normalized == TEXT("vector4") || Normalized == TEXT("float4"))
+		{
+			OutType = FNiagaraTypeDefinition::GetVec4Def();
+			return true;
+		}
+		if (Normalized == TEXT("color") || Normalized == TEXT("linearcolor"))
+		{
+			OutType = FNiagaraTypeDefinition::GetColorDef();
+			return true;
+		}
+		if (Normalized == TEXT("quat") || Normalized == TEXT("quaternion"))
+		{
+			OutType = FNiagaraTypeDefinition::GetQuatDef();
+			return true;
+		}
+		if (Normalized == TEXT("parametermap") || Normalized == TEXT("map"))
+		{
+			OutType = FNiagaraTypeDefinition::GetParameterMapDef();
+			return true;
+		}
+
+		OutError = FString::Printf(TEXT("Unsupported Niagara dynamic pin value_type: %s"), *TypeName);
+		return false;
+	}
+
+	bool IsNiagaraDynamicAddPin(const UEdGraphPin* Pin)
+	{
+		static const FName DynamicAddPinSubCategory(TEXT("DynamicAddPin"));
+		return Pin && Pin->PinType.PinCategory == UEdGraphSchema_Niagara::PinCategoryMisc && Pin->PinType.PinSubCategory == DynamicAddPinSubCategory;
+	}
+
+	UEdGraphPin* FindNiagaraDynamicAddPin(UEdGraphNode* Node, EEdGraphPinDirection Direction)
+	{
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == Direction && IsNiagaraDynamicAddPin(Pin))
+			{
+				return Pin;
+			}
+		}
+		return nullptr;
+	}
+
+	UEdGraphPin* AddNiagaraDynamicPin(UEdGraphNode* Node, EEdGraphPinDirection Direction, const FName PinName, const FNiagaraTypeDefinition& PinType)
+	{
+		static const FName DynamicAddPinSubCategory(TEXT("DynamicAddPin"));
+		static const FName ParameterPinSubCategory(TEXT("ParameterPin"));
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		UEdGraphPin* AddPin = FindNiagaraDynamicAddPin(Node, Direction);
+		if (!AddPin)
+		{
+			return nullptr;
+		}
+
+		AddPin->Modify();
+		AddPin->PinType = UEdGraphSchema_Niagara::TypeDefinitionToPinType(PinType);
+		AddPin->PinName = PinName;
+		AddPin->PinFriendlyName = FText::AsCultureInvariant(PinName.ToString());
+		AddPin->PersistentGuid = FGuid::NewGuid();
+
+		if (Node->GetClass()->GetName().Contains(TEXT("ParameterMapSet")))
+		{
+			AddPin->PinType.PinSubCategory = ParameterPinSubCategory;
+		}
+
+		Node->CreatePin(Direction, FEdGraphPinType(UEdGraphSchema_Niagara::PinCategoryMisc, DynamicAddPinSubCategory, nullptr, EPinContainerType::None, false, FEdGraphTerminalType()), TEXT("Add"));
+		if (UNiagaraNode* NiagaraNode = Cast<UNiagaraNode>(Node))
+		{
+			NiagaraNode->MarkNodeRequiresSynchronization(TEXT("ToolPlayMCP::AddNiagaraDynamicPin"), true);
+		}
+		return AddPin;
+	}
+
+	void RefreshCustomHlslSignatureFromPins(UNiagaraNodeCustomHlsl* Node)
+	{
+		if (!Node)
+		{
+			return;
+		}
+
+		Node->Modify();
+		FNiagaraFunctionSignature Signature = Node->Signature;
+		Signature.Inputs.Empty();
+		Signature.Outputs.Empty();
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || IsNiagaraDynamicAddPin(Pin))
+			{
+				continue;
+			}
+
+			const bool bNeedsValue = Pin->Direction == EGPD_Input;
+			FNiagaraVariable Variable = UEdGraphSchema_Niagara::PinToNiagaraVariable(Pin, bNeedsValue);
+			if (!Variable.IsValid())
+			{
+				continue;
+			}
+
+			if (Pin->Direction == EGPD_Input)
+			{
+				Signature.Inputs.Add(Variable);
+			}
+			else if (Pin->Direction == EGPD_Output)
+			{
+				Signature.Outputs.Add(Variable);
+			}
+		}
+
+		Node->Signature = Signature;
+		Node->MarkNodeRequiresSynchronization(TEXT("ToolPlayMCP::RefreshCustomHlslSignatureFromPins"), true);
 	}
 
 	void SetCustomHlslText(UNiagaraNodeCustomHlsl* Node, const FString& Hlsl)
@@ -839,9 +1152,28 @@ namespace
 			{
 				UNiagaraNodeCustomHlsl* CustomNode = CreateNiagaraGraphNode<UNiagaraNodeCustomHlsl>(Graph, X, Y);
 				FString Hlsl;
+				FString ScriptUsage;
 				Operation->TryGetStringField(TEXT("hlsl"), Hlsl);
-				CustomNode->ScriptUsage = ENiagaraScriptUsage::Module;
+				Operation->TryGetStringField(TEXT("script_usage"), ScriptUsage);
 				SetCustomHlslText(CustomNode, Hlsl);
+				if (ScriptUsage.Equals(TEXT("dynamic_input"), ESearchCase::IgnoreCase) || ScriptUsage.Equals(TEXT("dynamicinput"), ESearchCase::IgnoreCase))
+				{
+					FString OutputTypeName;
+					FNiagaraTypeDefinition OutputType = FNiagaraTypeDefinition::GetFloatDef();
+					Operation->TryGetStringField(TEXT("output_type"), OutputTypeName);
+					if (!ResolveNiagaraPinType(OutputTypeName, OutputType, OutError))
+					{
+						return false;
+					}
+					CustomNode->ScriptUsage = ENiagaraScriptUsage::DynamicInput;
+					AddNiagaraDynamicPin(CustomNode, EGPD_Input, FName(TEXT("Map")), FNiagaraTypeDefinition::GetParameterMapDef());
+					AddNiagaraDynamicPin(CustomNode, EGPD_Output, FName(TEXT("CustomHLSLOutput")), OutputType);
+				}
+				else
+				{
+					CustomNode->ScriptUsage = ENiagaraScriptUsage::Function;
+				}
+				RefreshCustomHlslSignatureFromPins(CustomNode);
 				NewNode = CustomNode;
 			}
 			else if (NodeKind.Equals(TEXT("op"), ESearchCase::IgnoreCase))
@@ -869,6 +1201,16 @@ namespace
 				FunctionNode->AllocateDefaultPins();
 				NewNode = FunctionNode;
 			}
+			else if (NodeKind.Equals(TEXT("parameter_map_set"), ESearchCase::IgnoreCase) || NodeKind.Equals(TEXT("parameter_map_set_node"), ESearchCase::IgnoreCase))
+			{
+				UClass* ParameterMapSetClass = LoadClass<UEdGraphNode>(nullptr, TEXT("/Script/NiagaraEditor.NiagaraNodeParameterMapSet"));
+				if (!ParameterMapSetClass)
+				{
+					OutError = TEXT("Could not load NiagaraNodeParameterMapSet class from NiagaraEditor.");
+					return false;
+				}
+				NewNode = CreateNiagaraGraphNodeByClass(Graph, ParameterMapSetClass, X, Y);
+			}
 			else
 			{
 				OutError = FString::Printf(TEXT("Unsupported Niagara graph node_kind: %s"), *NodeKind);
@@ -887,6 +1229,69 @@ namespace
 			Change->SetStringField(TEXT("type"), Type);
 			Change->SetStringField(TEXT("alias"), Alias);
 			Change->SetStringField(TEXT("title"), NodeTitle(NewNode));
+			OutChanges.Add(MakeShared<FJsonValueObject>(Change));
+			return true;
+		}
+
+		if (Type.Equals(TEXT("add_dynamic_pin"), ESearchCase::IgnoreCase))
+		{
+			FString NodeAlias;
+			FString DirectionText;
+			FString PinName;
+			FString ValueType;
+			Operation->TryGetStringField(TEXT("node"), NodeAlias);
+			Operation->TryGetStringField(TEXT("direction"), DirectionText);
+			Operation->TryGetStringField(TEXT("name"), PinName);
+			Operation->TryGetStringField(TEXT("value_type"), ValueType);
+
+			UEdGraphNode* DynamicNode = ResolveGraphNode(Session, NodeAlias);
+			if (!FindNiagaraDynamicAddPin(DynamicNode, EGPD_Input) && !FindNiagaraDynamicAddPin(DynamicNode, EGPD_Output))
+			{
+				OutError = FString::Printf(TEXT("Node does not support Niagara dynamic pins: %s"), *NodeAlias);
+				return false;
+			}
+			if (PinName.TrimStartAndEnd().IsEmpty())
+			{
+				OutError = TEXT("add_dynamic_pin requires a non-empty name.");
+				return false;
+			}
+
+			EEdGraphPinDirection Direction = EGPD_Input;
+			if (DirectionText.Equals(TEXT("output"), ESearchCase::IgnoreCase) || DirectionText.Equals(TEXT("out"), ESearchCase::IgnoreCase))
+			{
+				Direction = EGPD_Output;
+			}
+			else if (!DirectionText.IsEmpty() && !DirectionText.Equals(TEXT("input"), ESearchCase::IgnoreCase) && !DirectionText.Equals(TEXT("in"), ESearchCase::IgnoreCase))
+			{
+				OutError = FString::Printf(TEXT("Unsupported dynamic pin direction: %s"), *DirectionText);
+				return false;
+			}
+
+			FNiagaraTypeDefinition PinType;
+			if (!ResolveNiagaraPinType(ValueType, PinType, OutError))
+			{
+				return false;
+			}
+
+			DynamicNode->Modify();
+			UEdGraphPin* NewPin = AddNiagaraDynamicPin(DynamicNode, Direction, FName(*PinName), PinType);
+			if (!NewPin)
+			{
+				OutError = FString::Printf(TEXT("Failed to add dynamic pin %s to node %s."), *PinName, *NodeAlias);
+				return false;
+			}
+			NewPin->Modify();
+			if (UNiagaraNodeCustomHlsl* CustomNode = Cast<UNiagaraNodeCustomHlsl>(DynamicNode))
+			{
+				RefreshCustomHlslSignatureFromPins(CustomNode);
+			}
+
+			TSharedRef<FJsonObject> Change = MakeShared<FJsonObject>();
+			Change->SetStringField(TEXT("type"), Type);
+			Change->SetStringField(TEXT("node"), NodeAlias);
+			Change->SetStringField(TEXT("pin"), NewPin->PinName.ToString());
+			Change->SetStringField(TEXT("direction"), Direction == EGPD_Output ? TEXT("output") : TEXT("input"));
+			Change->SetStringField(TEXT("value_type"), PinType.GetName());
 			OutChanges.Add(MakeShared<FJsonValueObject>(Change));
 			return true;
 		}
@@ -912,6 +1317,16 @@ namespace
 
 			if (Type.Equals(TEXT("connect"), ESearchCase::IgnoreCase))
 			{
+				if (UEdGraphNode* FromNode = FromPin->GetOwningNode())
+				{
+					FromNode->Modify();
+				}
+				if (UEdGraphNode* ToNode = ToPin->GetOwningNode())
+				{
+					ToNode->Modify();
+				}
+				FromPin->Modify();
+				ToPin->Modify();
 				const UEdGraphSchema* Schema = Graph->GetSchema();
 				if (!Schema || !Schema->TryCreateConnection(FromPin, ToPin))
 				{
@@ -921,6 +1336,16 @@ namespace
 			}
 			else
 			{
+				if (UEdGraphNode* FromNode = FromPin->GetOwningNode())
+				{
+					FromNode->Modify();
+				}
+				if (UEdGraphNode* ToNode = ToPin->GetOwningNode())
+				{
+					ToNode->Modify();
+				}
+				FromPin->Modify();
+				ToPin->Modify();
 				FromPin->BreakLinkTo(ToPin);
 			}
 
@@ -1164,6 +1589,7 @@ bool FToolPlayMCPNiagaraModuleService::AddModuleToStack(const FString& SessionId
 		return false;
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Add Niagara Module")));
 	Session->System->Modify();
 	StackScript->Modify();
 	if (UNiagaraGraph* Graph = OutputNode->GetNiagaraGraph())
@@ -1174,6 +1600,7 @@ bool FToolPlayMCPNiagaraModuleService::AddModuleToStack(const FString& SessionId
 	UNiagaraNodeFunctionCall* NewModule = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ModuleScript, *OutputNode, TargetIndex, SuggestedName);
 	if (!NewModule)
 	{
+		Transaction.Cancel();
 		OutError = FString::Printf(TEXT("Failed to add module %s to stack %s."), *ScriptAssetPath, *TargetStackAlias);
 		return false;
 	}
@@ -1210,9 +1637,11 @@ bool FToolPlayMCPNiagaraModuleService::CreateLocalModule(const FString& SessionI
 	}
 
 	UNiagaraSystem* System = Session->System.Get();
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Create Niagara Local Module")));
 	UNiagaraScript* LocalScript = CreateScratchModuleScript(System, OutputNode->GetUsage(), ModuleName, OutError);
 	if (!LocalScript)
 	{
+		Transaction.Cancel();
 		return false;
 	}
 
@@ -1225,6 +1654,7 @@ bool FToolPlayMCPNiagaraModuleService::CreateLocalModule(const FString& SessionI
 	UNiagaraNodeFunctionCall* NewModule = FNiagaraStackGraphUtilities::AddScriptModuleToStack(LocalScript, *OutputNode, TargetIndex, ModuleName);
 	if (!NewModule)
 	{
+		Transaction.Cancel();
 		OutError = FString::Printf(TEXT("Failed to add local Niagara module to stack %s."), *TargetStackAlias);
 		return false;
 	}
@@ -1284,6 +1714,7 @@ bool FToolPlayMCPNiagaraModuleService::ApplyModuleGraphPatch(const FString& Sess
 		return false;
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Patch Niagara Module Graph")));
 	Session->System->Modify();
 	SourceScript->Modify();
 	Module->Modify();
@@ -1295,12 +1726,14 @@ bool FToolPlayMCPNiagaraModuleService::ApplyModuleGraphPatch(const FString& Sess
 		const TSharedPtr<FJsonObject>* OperationObject = nullptr;
 		if (!Operations[OperationIndex].IsValid() || !Operations[OperationIndex]->TryGetObject(OperationObject) || !OperationObject || !OperationObject->IsValid())
 		{
+			Transaction.Cancel();
 			OutError = FString::Printf(TEXT("Niagara graph patch operation %d is not an object."), OperationIndex);
 			return false;
 		}
 
 		if (!ApplyGraphOperation(SessionId, ModuleAlias, *Session, Module, OperationObject->ToSharedRef(), Changes, OutError))
 		{
+			Transaction.Cancel();
 			OutError = FString::Printf(TEXT("Operation %d failed: %s"), OperationIndex, *OutError);
 			return false;
 		}
@@ -1340,10 +1773,12 @@ bool FToolPlayMCPNiagaraModuleService::RemoveModule(const FString& SessionId, co
 		return false;
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Remove Niagara Module")));
 	Session->System->Modify();
 	SourceScript->Modify();
 	if (!RemoveModuleNodeFromParameterMapChain(Module, OutError))
 	{
+		Transaction.Cancel();
 		return false;
 	}
 
@@ -1390,10 +1825,6 @@ bool FToolPlayMCPNiagaraModuleService::MoveModule(const FString& SessionId, cons
 		return false;
 	}
 
-	Session->System->Modify();
-	SourceScript->Modify();
-	TargetScript->Modify();
-
 	UNiagaraScript* ModuleScript = Module->FunctionScript;
 	if (!ModuleScript)
 	{
@@ -1401,16 +1832,23 @@ bool FToolPlayMCPNiagaraModuleService::MoveModule(const FString& SessionId, cons
 		return false;
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Move Niagara Module")));
+	Session->System->Modify();
+	SourceScript->Modify();
+	TargetScript->Modify();
+
 	UNiagaraNodeFunctionCall* MovedModule = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ModuleScript, *TargetOutputNode, TargetIndex, Module->GetFunctionName());
 
 	if (!MovedModule)
 	{
+		Transaction.Cancel();
 		OutError = FString::Printf(TEXT("Failed to insert moved module at target stack: %s"), *TargetStackAlias);
 		return false;
 	}
 
 	if (!RemoveModuleNodeFromParameterMapChain(Module, OutError))
 	{
+		Transaction.Cancel();
 		return false;
 	}
 
@@ -1447,6 +1885,7 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleEnabled(const FString& SessionId
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Set Niagara Module Enabled")));
 	Session->System->Modify();
 	Module->Modify();
 	FNiagaraStackGraphUtilities::SetModuleIsEnabled(*Module, bEnabled);
@@ -1542,14 +1981,7 @@ bool FToolPlayMCPNiagaraModuleService::GetModuleInputOverride(const FString& Ses
 		return false;
 	}
 
-	const FNiagaraParameterHandle ModuleHandle(MatchedInput->GetName());
-	const FNiagaraParameterHandle AliasedHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleHandle, Module);
-	UEdGraphPin* OverridePin = &FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
-		*Module,
-		AliasedHandle,
-		MatchedInput->GetType(),
-		FGuid(),
-		FGuid());
+	UEdGraphPin* OverridePin = FindExistingOverridePin(Module, *MatchedInput);
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetBoolField(TEXT("ok"), true);
@@ -1624,6 +2056,21 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleInput(const FString& SessionId, 
 		return false;
 	}
 
+	UNiagaraSystem* System = ResolveSystem(SessionId);
+	if (!System)
+	{
+		OutError = FString::Printf(TEXT("Invalid Niagara session '%s'."), *SessionId);
+		return false;
+	}
+
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Set Niagara Module Input")));
+	System->Modify();
+	Module->Modify();
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+	}
+
 	const FNiagaraParameterHandle ModuleHandle(MatchedInput->GetName());
 	const FNiagaraParameterHandle AliasedHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleHandle, Module);
 	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
@@ -1634,17 +2081,36 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleInput(const FString& SessionId, 
 		FGuid());
 
 	OverridePin.Modify();
-	OverridePin.DefaultValue = Value;
-	OverridePin.AutogeneratedDefaultValue = Value;
+	const FString PreviousDefaultValue = OverridePin.DefaultValue;
 	if (const UEdGraphSchema* Schema = OverridePin.GetSchema())
 	{
 		Schema->TrySetDefaultValue(OverridePin, Value);
+	}
+	else
+	{
+		OverridePin.DefaultValue = Value;
 	}
 
 	if (UEdGraph* Graph = Module->GetGraph())
 	{
 		Graph->Modify();
 		Graph->MarkPackageDirty();
+	}
+	System->MarkPackageDirty();
+	System->RequestCompile(false);
+
+	const UEdGraphPin* ConfirmedPin = FindExistingOverridePin(Module, *MatchedInput);
+	if (!ConfirmedPin)
+	{
+		OutError = FString::Printf(TEXT("Failed to confirm Niagara override pin after setting '%s' on module '%s'."), *InputName, *ModuleAlias);
+		return false;
+	}
+
+	const bool bHasStoredValue = !ConfirmedPin->DefaultValue.IsEmpty() || ConfirmedPin->LinkedTo.Num() > 0 || Value.IsEmpty();
+	if (!bHasStoredValue)
+	{
+		OutError = FString::Printf(TEXT("Niagara override pin for '%s' was created but did not store the requested value '%s'."), *InputName, *Value);
+		return false;
 	}
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
@@ -1653,6 +2119,89 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleInput(const FString& SessionId, 
 	Root->SetStringField(TEXT("input"), InputName);
 	Root->SetStringField(TEXT("full_input"), MatchedInput->GetName().ToString());
 	Root->SetStringField(TEXT("value"), Value);
+	Root->SetStringField(TEXT("previous_default_value"), PreviousDefaultValue);
+	Root->SetStringField(TEXT("stored_default_value"), ConfirmedPin->DefaultValue);
+	Root->SetBoolField(TEXT("confirmed_override_pin"), true);
+	Root->SetBoolField(TEXT("default_value_exact_match"), ConfirmedPin->DefaultValue.Equals(Value, ESearchCase::CaseSensitive));
+	OutJson = ToJsonString(Root);
+	return true;
+}
+
+bool FToolPlayMCPNiagaraModuleService::SetModuleStaticSwitch(const FString& SessionId, const FString& ModuleAlias, const FString& InputName, const FString& Value, FString& OutJson, FString& OutError)
+{
+	UNiagaraSystem* System = ResolveSystem(SessionId);
+	if (!System)
+	{
+		OutError = FString::Printf(TEXT("Invalid Niagara session '%s'. Re-export the system before editing."), *SessionId);
+		return false;
+	}
+
+	UNiagaraNodeFunctionCall* Module = ResolveModule(SessionId, ModuleAlias);
+	if (!Module)
+	{
+		OutError = FString::Printf(TEXT("Invalid Niagara module alias '%s'. Re-export the system before editing."), *ModuleAlias);
+		return false;
+	}
+
+	TSet<UEdGraphPin*> HiddenStaticSwitchPins;
+	UEdGraphPin* StaticSwitchPin = FindStaticSwitchPin(Module, InputName, &HiddenStaticSwitchPins);
+	if (!StaticSwitchPin)
+	{
+		OutError = FString::Printf(TEXT("Module '%s' has no static switch named '%s'. Use list_niagara_module_inputs and look for source='static_switch_pin'."), *ModuleAlias, *InputName);
+		return false;
+	}
+
+	FString NormalizedValue;
+	if (!NormalizeStaticSwitchValue(StaticSwitchPin, Value, NormalizedValue, OutError))
+	{
+		return false;
+	}
+
+	const FString PreviousValue = StaticSwitchPin->DefaultValue;
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Set Niagara Static Switch")));
+	System->Modify();
+	Module->Modify();
+	StaticSwitchPin->Modify();
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+	}
+
+	bool bUsedSchemaSetter = false;
+	if (const UEdGraphSchema* Schema = StaticSwitchPin->GetSchema())
+	{
+		Schema->TrySetDefaultValue(*StaticSwitchPin, NormalizedValue);
+		bUsedSchemaSetter = true;
+	}
+	if (!bUsedSchemaSetter || !StaticSwitchPin->DefaultValue.Equals(NormalizedValue, ESearchCase::CaseSensitive))
+	{
+		StaticSwitchPin->DefaultValue = NormalizedValue;
+		StaticSwitchPin->AutogeneratedDefaultValue = NormalizedValue;
+	}
+
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+		Graph->NotifyGraphChanged();
+		Graph->MarkPackageDirty();
+	}
+	System->MarkPackageDirty();
+	System->RequestCompile(false);
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetBoolField(TEXT("ok"), true);
+	Root->SetStringField(TEXT("operation"), TEXT("set_niagara_static_switch"));
+	Root->SetStringField(TEXT("asset_path"), System->GetPathName());
+	Root->SetStringField(TEXT("module"), ModuleAlias);
+	Root->SetStringField(TEXT("input"), StaticSwitchPin->PinName.ToString());
+	Root->SetStringField(TEXT("value"), Value);
+	Root->SetStringField(TEXT("normalized_value"), NormalizedValue);
+	Root->SetStringField(TEXT("previous_value"), PreviousValue);
+	Root->SetStringField(TEXT("actual_value"), StaticSwitchPin->DefaultValue);
+	Root->SetBoolField(TEXT("used_schema_setter"), bUsedSchemaSetter);
+	Root->SetBoolField(TEXT("hidden"), HiddenStaticSwitchPins.Contains(StaticSwitchPin));
+	Root->SetBoolField(TEXT("reexport_required"), true);
+	Root->SetStringField(TEXT("next_step"), TEXT("Re-export the Niagara system, then call compile_status with force=true and wait=true."));
 	OutJson = ToJsonString(Root);
 	return true;
 }
@@ -1697,6 +2246,21 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleObjectInput(const FString& Sessi
 		return false;
 	}
 
+	UNiagaraSystem* System = ResolveSystem(SessionId);
+	if (!System)
+	{
+		OutError = FString::Printf(TEXT("Invalid Niagara session '%s'."), *SessionId);
+		return false;
+	}
+
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Set Niagara Module Object Input")));
+	System->Modify();
+	Module->Modify();
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+	}
+
 	const FNiagaraParameterHandle ModuleHandle(MatchedInput->GetName());
 	const FNiagaraParameterHandle AliasedHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleHandle, Module);
 	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
@@ -1706,6 +2270,7 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleObjectInput(const FString& Sessi
 		FGuid(),
 		FGuid());
 
+	OverridePin.Modify();
 	if (OverridePin.LinkedTo.Num() > 0)
 	{
 		TArray<UEdGraphNode*> OldLinkedNodes;
@@ -1761,6 +2326,8 @@ bool FToolPlayMCPNiagaraModuleService::SetModuleObjectInput(const FString& Sessi
 		Graph->Modify();
 		Graph->MarkPackageDirty();
 	}
+	System->MarkPackageDirty();
+	System->RequestCompile(false);
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetBoolField(TEXT("ok"), true);
@@ -1814,7 +2381,13 @@ bool FToolPlayMCPNiagaraModuleService::BindModuleInputToUserParameter(const FStr
 	const FString UserParameterName = NormalizeUserParameterName(UserParameter.IsEmpty() ? InputName : UserParameter);
 	const FNiagaraVariable UserVariable(MatchedInput->GetType(), FName(*UserParameterName));
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Bind Niagara Module Input To User Parameter")));
 	System->Modify();
+	Module->Modify();
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+	}
 	FNiagaraUserRedirectionParameterStore& UserParameters = System->GetExposedParameters();
 	if (UserParameters.IndexOf(UserVariable) == INDEX_NONE)
 	{
@@ -1832,6 +2405,7 @@ bool FToolPlayMCPNiagaraModuleService::BindModuleInputToUserParameter(const FStr
 		FGuid(),
 		FGuid());
 
+	OverridePin.Modify();
 	if (OverridePin.LinkedTo.Num() > 0)
 	{
 		TArray<UEdGraphNode*> OldLinkedNodes;
@@ -1864,6 +2438,7 @@ bool FToolPlayMCPNiagaraModuleService::BindModuleInputToUserParameter(const FStr
 		Graph->MarkPackageDirty();
 	}
 	System->MarkPackageDirty();
+	System->RequestCompile(false);
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetBoolField(TEXT("ok"), true);
@@ -1927,6 +2502,14 @@ bool FToolPlayMCPNiagaraModuleService::BindSkeletalMeshInputToUserParameter(cons
 		}
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Bind Niagara Skeletal Mesh Input To User Parameter")));
+	System->Modify();
+	Module->Modify();
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+	}
+
 	const FNiagaraParameterHandle ModuleHandle(MatchedInput->GetName());
 	const FNiagaraParameterHandle AliasedHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleHandle, Module);
 	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
@@ -1935,6 +2518,7 @@ bool FToolPlayMCPNiagaraModuleService::BindSkeletalMeshInputToUserParameter(cons
 		MatchedInput->GetType(),
 		FGuid(),
 		FGuid());
+	OverridePin.Modify();
 
 	UNiagaraDataInterfaceSkeletalMesh* SkeletalMeshDI = FindLinkedSkeletalMeshDI(OverridePin);
 	if (!SkeletalMeshDI)
@@ -1951,6 +2535,7 @@ bool FToolPlayMCPNiagaraModuleService::BindSkeletalMeshInputToUserParameter(cons
 
 	if (!SkeletalMeshDI)
 	{
+		Transaction.Cancel();
 		OutError = FString::Printf(TEXT("Failed to create or find Skeletal Mesh data interface for input '%s'."), *InputName);
 		return false;
 	}
@@ -1958,7 +2543,6 @@ bool FToolPlayMCPNiagaraModuleService::BindSkeletalMeshInputToUserParameter(cons
 	const FString UserParameterName = NormalizeUserParameterName(UserParameter);
 	const FNiagaraVariable UserVariable(MatchedInput->GetType(), FName(*UserParameterName));
 
-	System->Modify();
 	FNiagaraUserRedirectionParameterStore& UserParameters = System->GetExposedParameters();
 	int32 DataInterfaceOffset = UserParameters.IndexOf(UserVariable);
 	if (DataInterfaceOffset == INDEX_NONE)
@@ -2000,6 +2584,7 @@ bool FToolPlayMCPNiagaraModuleService::BindSkeletalMeshInputToUserParameter(cons
 		Graph->MarkPackageDirty();
 	}
 	System->MarkPackageDirty();
+	System->RequestCompile(false);
 	UserParameters.OnInterfaceChange();
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
@@ -2070,6 +2655,14 @@ bool FToolPlayMCPNiagaraModuleService::BindVolumeTextureInputToUserParameter(con
 		}
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Bind Niagara Volume Texture Input To User Parameter")));
+	System->Modify();
+	Module->Modify();
+	if (UEdGraph* Graph = Module->GetGraph())
+	{
+		Graph->Modify();
+	}
+
 	const FNiagaraParameterHandle ModuleHandle(MatchedInput->GetName());
 	const FNiagaraParameterHandle AliasedHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(ModuleHandle, Module);
 	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
@@ -2078,6 +2671,7 @@ bool FToolPlayMCPNiagaraModuleService::BindVolumeTextureInputToUserParameter(con
 		MatchedInput->GetType(),
 		FGuid(),
 		FGuid());
+	OverridePin.Modify();
 
 	UNiagaraDataInterfaceVolumeTexture* VolumeTextureDI = FindLinkedVolumeTextureDI(OverridePin);
 	if (!VolumeTextureDI)
@@ -2093,6 +2687,7 @@ bool FToolPlayMCPNiagaraModuleService::BindVolumeTextureInputToUserParameter(con
 
 	if (!VolumeTextureDI)
 	{
+		Transaction.Cancel();
 		OutError = FString::Printf(TEXT("Failed to create or find Volume Texture data interface for input '%s'."), *InputName);
 		return false;
 	}
@@ -2100,7 +2695,6 @@ bool FToolPlayMCPNiagaraModuleService::BindVolumeTextureInputToUserParameter(con
 	const FString UserParameterName = NormalizeUserParameterName(UserParameter);
 	const FNiagaraVariable UserTextureVariable(FNiagaraTypeDefinition::GetUTextureDef(), FName(*UserParameterName));
 
-	System->Modify();
 	FNiagaraUserRedirectionParameterStore& UserParameters = System->GetExposedParameters();
 	int32 ParameterOffset = UserParameters.IndexOf(UserTextureVariable);
 	if (ParameterOffset == INDEX_NONE)
@@ -2127,6 +2721,7 @@ bool FToolPlayMCPNiagaraModuleService::BindVolumeTextureInputToUserParameter(con
 		Graph->MarkPackageDirty();
 	}
 	System->MarkPackageDirty();
+	System->RequestCompile(false);
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetBoolField(TEXT("ok"), true);

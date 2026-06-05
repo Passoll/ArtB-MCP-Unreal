@@ -1111,6 +1111,7 @@ namespace
 		const FMaterialParameterInfo ParameterInfo{FName(*Name)};
 		if (UMaterialInstanceConstant* MIC = Cast<UMaterialInstanceConstant>(AssetObject))
 		{
+			MIC->Modify();
 			if (ValueType.Equals(TEXT("texture"), ESearchCase::IgnoreCase))
 			{
 				UTexture* Texture = Cast<UTexture>(FSoftObjectPath(Value->AsString()).TryLoad());
@@ -1141,6 +1142,7 @@ namespace
 
 		if (UMaterial* Material = Cast<UMaterial>(AssetObject))
 		{
+			Material->Modify();
 			if (ValueType.Equals(TEXT("texture"), ESearchCase::IgnoreCase))
 			{
 				UTexture* Texture = Cast<UTexture>(FSoftObjectPath(Value->AsString()).TryLoad());
@@ -1222,6 +1224,7 @@ namespace
 
 		UObject* Outer = bApply ? static_cast<UObject*>(Material) : GetTransientPackage();
 		UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(Outer, ExpressionClass, NAME_None, RF_Transactional);
+		NewExpression->Modify();
 		NewExpression->Material = Material;
 		int32 X = 0;
 		int32 Y = 0;
@@ -1242,6 +1245,7 @@ namespace
 
 		if (bApply)
 		{
+			Material->Modify();
 			Material->GetExpressionCollection().AddExpression(NewExpression);
 		}
 		CreatedNodes.Add(TempId, NewExpression);
@@ -1272,6 +1276,7 @@ namespace
 			return true;
 		}
 
+		Material->Modify();
 		return ApplyJsonProperties(Material, *PropertiesObject, OutMessage);
 	}
 
@@ -1326,6 +1331,7 @@ namespace
 			return true;
 		}
 
+		Expression->Modify();
 		if (!ApplyJsonProperties(Expression, *PropertiesObject, OutMessage))
 		{
 			return false;
@@ -1420,6 +1426,15 @@ namespace
 			return true;
 		}
 
+		Material->Modify();
+		FromExpression->Modify();
+		if (ToNodeId != TEXT("root"))
+		{
+			if (UMaterialExpression* ToExpression = ResolvePatchNode(ToNodeId, ExistingNodes, CreatedNodes))
+			{
+				ToExpression->Modify();
+			}
+		}
 		TargetInput->Expression = FromExpression;
 		TargetInput->OutputIndex = OutputIndex;
 		TargetInput->InputName = FName(*ToPin);
@@ -1484,6 +1499,14 @@ namespace
 			return true;
 		}
 
+		Material->Modify();
+		if (ToNodeId != TEXT("root"))
+		{
+			if (UMaterialExpression* ToExpression = ResolvePatchNode(ToNodeId, ExistingNodes, CreatedNodes))
+			{
+				ToExpression->Modify();
+			}
+		}
 		TargetInput->Expression = nullptr;
 		TargetInput->OutputIndex = 0;
 		OutMessage = FString::Printf(TEXT("Disconnected %s.%s."), *ToNodeId, *ToPin);
@@ -1527,6 +1550,7 @@ namespace
 				return true;
 			}
 
+			Material->Modify();
 			Material->EditorX = X;
 			Material->EditorY = Y;
 			OutMessage = FString::Printf(TEXT("Moved %s to [%d, %d]."), *NodeId, X, Y);
@@ -1546,6 +1570,7 @@ namespace
 			return true;
 		}
 
+		Expression->Modify();
 		Expression->MaterialExpressionEditorX = X;
 		Expression->MaterialExpressionEditorY = Y;
 		OutMessage = FString::Printf(TEXT("Moved %s to [%d, %d]."), *NodeId, X, Y);
@@ -1838,12 +1863,15 @@ bool FToolPlayMCPMaterialService::CreateMaterialAsset(const FString& PackagePath
 		return false;
 	}
 
+	const FScopedTransaction Transaction(FText::FromString(TEXT("ToolPlayMCP: Create Material Asset")));
+
 	UPackage* Package = CreatePackage(*PackageName);
 	if (!Package)
 	{
 		OutError = FString::Printf(TEXT("Failed to create package '%s'."), *PackageName);
 		return false;
 	}
+	Package->Modify();
 
 	UMaterial* Material = NewObject<UMaterial>(Package, UMaterial::StaticClass(), FName(*AssetName), RF_Public | RF_Standalone | RF_Transactional);
 	if (!Material)
@@ -1852,6 +1880,7 @@ bool FToolPlayMCPMaterialService::CreateMaterialAsset(const FString& PackagePath
 		return false;
 	}
 
+	Material->Modify();
 	Material->MaterialDomain = MD_Surface;
 	Material->BlendMode = BLEND_Translucent;
 	Material->TwoSided = true;

@@ -662,6 +662,78 @@ TSharedPtr<FJsonObject> FToolPlayMCPBridgeServer::HandleCommand(const TSharedPtr
 		return Result;
 	}
 
+	if (Command == TEXT("get_niagara_stack_issues"))
+	{
+		const TSharedPtr<FJsonObject>* Params = nullptr;
+		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Missing params object."));
+			return Result;
+		}
+
+		FString AssetPath;
+		(*Params)->TryGetStringField(TEXT("asset_path"), AssetPath);
+
+		FString Json;
+		FString Error;
+		if (!FToolPlayMCPNiagaraSystemExporter::ExportStackIssuesByPath(AssetPath, Json, Error))
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Error);
+			return Result;
+		}
+
+		Result->SetBoolField(TEXT("ok"), true);
+		if (TSharedPtr<FJsonObject> Payload = ParseJsonObjectPayload(Json))
+		{
+			Result->SetObjectField(TEXT("diagnostics"), Payload.ToSharedRef());
+		}
+		else
+		{
+			Result->SetStringField(TEXT("diagnostics_json"), Json);
+		}
+		return Result;
+	}
+
+	if (Command == TEXT("get_niagara_diagnostics"))
+	{
+		const TSharedPtr<FJsonObject>* Params = nullptr;
+		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Missing params object."));
+			return Result;
+		}
+
+		FString AssetPath;
+		bool bForce = false;
+		bool bWait = true;
+		(*Params)->TryGetStringField(TEXT("asset_path"), AssetPath);
+		(*Params)->TryGetBoolField(TEXT("force"), bForce);
+		(*Params)->TryGetBoolField(TEXT("wait"), bWait);
+
+		FString Json;
+		FString Error;
+		if (!FToolPlayMCPNiagaraSystemExporter::ExportDiagnosticsByPath(AssetPath, bForce, bWait, Json, Error))
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Error);
+			return Result;
+		}
+
+		Result->SetBoolField(TEXT("ok"), true);
+		if (TSharedPtr<FJsonObject> Payload = ParseJsonObjectPayload(Json))
+		{
+			Result->SetObjectField(TEXT("diagnostics"), Payload.ToSharedRef());
+		}
+		else
+		{
+			Result->SetStringField(TEXT("diagnostics_json"), Json);
+		}
+		return Result;
+	}
+
 	if (Command == TEXT("create_niagara_system"))
 	{
 		const TSharedPtr<FJsonObject>* Params = nullptr;
@@ -770,6 +842,99 @@ TSharedPtr<FJsonObject> FToolPlayMCPBridgeServer::HandleCommand(const TSharedPtr
 		return Result;
 	}
 
+	if (Command == TEXT("set_niagara_emitter_sim_target"))
+	{
+		const TSharedPtr<FJsonObject>* Params = nullptr;
+		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Missing params object."));
+			return Result;
+		}
+
+		FString SystemAssetPath;
+		FString EmitterAlias;
+		FString SimTarget;
+		(*Params)->TryGetStringField(TEXT("system_asset_path"), SystemAssetPath);
+		(*Params)->TryGetStringField(TEXT("emitter"), EmitterAlias);
+		(*Params)->TryGetStringField(TEXT("sim_target"), SimTarget);
+
+		FString Json;
+		FString Error;
+		if (!FToolPlayMCPNiagaraSystemService::SetEmitterSimTarget(SystemAssetPath, EmitterAlias, SimTarget, Json, Error))
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Error);
+			return Result;
+		}
+
+		Result->SetBoolField(TEXT("ok"), true);
+		if (TSharedPtr<FJsonObject> Payload = ParseJsonObjectPayload(Json))
+		{
+			Result->SetObjectField(TEXT("system"), Payload.ToSharedRef());
+		}
+		else
+		{
+			Result->SetStringField(TEXT("system_json"), Json);
+		}
+		return Result;
+	}
+
+	if (Command == TEXT("configure_niagara_sprite_renderer"))
+	{
+		const TSharedPtr<FJsonObject>* Params = nullptr;
+		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Missing params object."));
+			return Result;
+		}
+
+		FString SystemAssetPath;
+		FString EmitterAlias;
+		FString FacingMode;
+		FString Alignment;
+		int32 RendererIndex = 0;
+		double PivotU = 0.5;
+		double PivotV = 0.5;
+		(*Params)->TryGetStringField(TEXT("system_asset_path"), SystemAssetPath);
+		(*Params)->TryGetStringField(TEXT("emitter"), EmitterAlias);
+		(*Params)->TryGetStringField(TEXT("facing_mode"), FacingMode);
+		(*Params)->TryGetStringField(TEXT("alignment"), Alignment);
+		(*Params)->TryGetNumberField(TEXT("renderer_index"), RendererIndex);
+		(*Params)->TryGetNumberField(TEXT("pivot_u"), PivotU);
+		(*Params)->TryGetNumberField(TEXT("pivot_v"), PivotV);
+
+		FString Json;
+		FString Error;
+		if (!FToolPlayMCPNiagaraSystemService::ConfigureSpriteRenderer(
+			SystemAssetPath,
+			EmitterAlias,
+			RendererIndex,
+			FacingMode,
+			Alignment,
+			static_cast<float>(PivotU),
+			static_cast<float>(PivotV),
+			Json,
+			Error))
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Error);
+			return Result;
+		}
+
+		Result->SetBoolField(TEXT("ok"), true);
+		if (TSharedPtr<FJsonObject> Payload = ParseJsonObjectPayload(Json))
+		{
+			Result->SetObjectField(TEXT("system"), Payload.ToSharedRef());
+		}
+		else
+		{
+			Result->SetStringField(TEXT("system_json"), Json);
+		}
+		return Result;
+	}
+
 	if (Command == TEXT("search_niagara_modules"))
 	{
 		const TSharedPtr<FJsonObject>* Params = nullptr;
@@ -810,7 +975,7 @@ TSharedPtr<FJsonObject> FToolPlayMCPBridgeServer::HandleCommand(const TSharedPtr
 		return Result;
 	}
 
-	if (Command == TEXT("add_niagara_module") || Command == TEXT("create_niagara_local_module") || Command == TEXT("apply_niagara_module_graph_patch") || Command == TEXT("remove_niagara_module") || Command == TEXT("move_niagara_module") || Command == TEXT("set_niagara_module_enabled") || Command == TEXT("list_niagara_module_inputs") || Command == TEXT("get_niagara_module_input_override") || Command == TEXT("set_niagara_module_input") || Command == TEXT("set_niagara_module_object_input") || Command == TEXT("bind_niagara_module_input_to_user_param"))
+	if (Command == TEXT("add_niagara_module") || Command == TEXT("create_niagara_local_module") || Command == TEXT("apply_niagara_module_graph_patch") || Command == TEXT("remove_niagara_module") || Command == TEXT("move_niagara_module") || Command == TEXT("set_niagara_module_enabled") || Command == TEXT("list_niagara_module_inputs") || Command == TEXT("get_niagara_module_input_override") || Command == TEXT("set_niagara_module_input") || Command == TEXT("set_niagara_static_switch") || Command == TEXT("set_niagara_module_object_input") || Command == TEXT("bind_niagara_module_input_to_user_param"))
 	{
 		const TSharedPtr<FJsonObject>* Params = nullptr;
 		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
@@ -896,6 +1061,14 @@ TSharedPtr<FJsonObject> FToolPlayMCPBridgeServer::HandleCommand(const TSharedPtr
 			(*Params)->TryGetStringField(TEXT("input"), InputName);
 			(*Params)->TryGetStringField(TEXT("value"), Value);
 			bSucceeded = FToolPlayMCPNiagaraModuleService::SetInput(SessionId, ModuleAlias, InputName, Value, Json, Error);
+		}
+		else if (Command == TEXT("set_niagara_static_switch"))
+		{
+			FString InputName;
+			FString Value;
+			(*Params)->TryGetStringField(TEXT("input"), InputName);
+			(*Params)->TryGetStringField(TEXT("value"), Value);
+			bSucceeded = FToolPlayMCPNiagaraModuleService::SetStaticSwitch(SessionId, ModuleAlias, InputName, Value, Json, Error);
 		}
 		else if (Command == TEXT("set_niagara_module_object_input"))
 		{

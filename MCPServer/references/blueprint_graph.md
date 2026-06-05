@@ -18,10 +18,11 @@ Aliases are editor-session handles. Re-export after structural edits.
 
 1. Call `blueprint(action="read", params={"asset_path":"..."})`.
 2. Inspect graph aliases and node aliases.
-3. Add variables or add/edit/connect/remove nodes through Blueprint tools.
-4. Re-export after structural edits to refresh aliases.
-5. Call `compile_blueprint(asset_path)`.
-6. Call `asset(action="save", params={"asset_path":"..."})`.
+3. Before mutating an existing Blueprint, state the exact asset path and intended edits, then get user approval.
+4. Add variables or add/edit/connect/remove nodes through Blueprint tools only after approval.
+5. Re-export after structural edits to refresh aliases.
+6. Call `compile_blueprint(asset_path)` only after approved edits.
+7. Call `asset(action="save", params={"asset_path":"..."})` only after explicit save approval.
 
 ## Tools
 
@@ -77,10 +78,23 @@ Remove one node by alias.
 
 Compile after edits. Save separately with `asset(action="save")`.
 
+Returns compiler diagnostics captured from Unreal's `FCompilerResultsLog`:
+
+- `success`: false when the compile produced errors or the Blueprint status is `error`.
+- `status`: compact Blueprint status such as `up_to_date`, `up_to_date_with_warnings`, `dirty`, or `error`.
+- `error_count` / `warning_count`: compiler log counts.
+- `messages`: array of `{severity, message}` entries from tokenized compiler messages.
+
+Use these fields instead of scraping Output Log text. A compile action may mark or refresh generated Blueprint state, so only call it on existing assets after write approval.
+
 ## Editing Rules
 
+- Existing Blueprints are read-only until the user explicitly approves a write to that asset in the current conversation.
+- Prefer duplicating/copying an existing Blueprint and editing the copy. If the user asks for a new prototype, create a new Blueprint instead of changing an existing one.
 - Do not invent aliases; export first.
 - Re-export after adding or removing nodes.
 - Add member variables before spawning Get/Set variable nodes.
 - Use the engine schema to connect pins, not raw edge JSON.
-- Compile before saving if behavior changed.
+- Compile before saving if behavior changed, but do not save unless the user explicitly approved saving that exact edit.
+- Blueprint mutation tools must wrap user-visible edits in `FScopedTransaction`, call `Modify()` on the Blueprint, graph, nodes, and pins before mutation, and group multi-step graph edits into one editor undo step.
+- Current Blueprint mutation tools may mark assets dirty and are not guaranteed to be undoable after save or editor restart; use Unreal Editor undo immediately if the transaction is available, otherwise restore from source control or a duplicated backup.

@@ -63,5 +63,12 @@ def dispatch_action(
         return error("BRIDGE_TIMEOUT", str(exc), retryable=True)
     except ConnectionError as exc:
         return error("EDITOR_NOT_CONNECTED", str(exc), retryable=True)
+    except RuntimeError as exc:
+        return error(
+            str(getattr(exc, "code", "UNREAL_EXCEPTION")),
+            str(exc),
+            details=getattr(exc, "details", None),
+            retryable=bool(getattr(exc, "retryable", False)),
+        )
     except Exception as exc:
         return error("UNREAL_EXCEPTION", str(exc))

@@ -1,5 +1,7 @@
 # ArtB MCP Unreal
 
+[中文说明](README.zh-CN.md)
+
 ArtB MCP Unreal is an experimental Unreal Editor plugin that exposes AI-oriented tools for understanding and editing Unreal assets through a local MCP bridge.
 
 Current focus areas:
@@ -28,11 +30,51 @@ The Unreal-side bridge listens on `127.0.0.1:55557` while the plugin is active.
 
 The MCP entrypoint is:
 
+```text
+Plugins\ToolPlayMCP\MCPServer\toolplay_mcp_server.py
+```
+
+Recommended Windows setup:
+
+```powershell
+Plugins\ToolPlayMCP\MCPServer\setup_toolplay_mcp.bat
+```
+
+This installs Python requirements, validates local catalogs, checks whether the Unreal Editor bridge is reachable, and prints a Codex config snippet. If an AI agent only needs to check the local environment without installing packages, run:
+
+```powershell
+Plugins\ToolPlayMCP\MCPServer\setup_toolplay_mcp.bat --check-only
+```
+
+Manual setup:
+
+```powershell
+python -m pip install -r Plugins\ToolPlayMCP\MCPServer\requirements.txt
+```
+
 ```powershell
 python Plugins\ToolPlayMCP\MCPServer\toolplay_mcp_server.py
 ```
 
 Do not point Codex or another MCP client directly at the Unreal TCP port. Use the Python MCP server; it exposes stable MCP tools and forwards calls to the Unreal bridge.
+
+For Codex, add this to `C:\Users\<You>\.codex\config.toml` and restart Codex:
+
+```toml
+[mcp_servers.toolplay-mcp]
+command = 'python'
+args = ['<ProjectRoot>\Plugins\ToolPlayMCP\MCPServer\toolplay_mcp_server.py']
+```
+
+Replace `<ProjectRoot>` with the Unreal project path, for example:
+
+```toml
+[mcp_servers.toolplay-mcp]
+command = 'python'
+args = ['G:\UnrealProject\ToolPlayProject\Plugins\ToolPlayMCP\MCPServer\toolplay_mcp_server.py']
+```
+
+The Unreal Editor must be open with the `ToolPlayMCP` plugin loaded before MCP calls can reach UE.
 
 For details, see:
 
@@ -40,6 +82,12 @@ For details, see:
 - `MCPServer/references/tool_registry.md`
 - `MCPServer/references/niagara_system.md`
 - `Docs/code-structure.md`
+
+## AI Asset Safety
+
+Existing Unreal assets are read-only by default. AI agents may inspect, export, diagnose, search, trace, and validate assets without confirmation, but must ask before creating new assets, modifying existing assets, or saving packages.
+
+For existing `.uasset` files such as Blueprints, Materials, Niagara Systems, Levels, Widgets, and Data Assets, prefer duplicating/copying the asset and editing the copy. Do not directly modify an existing asset unless the user explicitly approves the exact asset path and intended edit in the current conversation.
 
 ## Notes
 
