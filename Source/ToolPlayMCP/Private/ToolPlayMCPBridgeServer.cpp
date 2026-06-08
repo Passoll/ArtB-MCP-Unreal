@@ -880,6 +880,42 @@ TSharedPtr<FJsonObject> FToolPlayMCPBridgeServer::HandleCommand(const TSharedPtr
 		return Result;
 	}
 
+	if (Command == TEXT("remove_niagara_user_parameter"))
+	{
+		const TSharedPtr<FJsonObject>* Params = nullptr;
+		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Missing params object."));
+			return Result;
+		}
+
+		FString SystemAssetPath;
+		FString UserParameter;
+		(*Params)->TryGetStringField(TEXT("system_asset_path"), SystemAssetPath);
+		(*Params)->TryGetStringField(TEXT("user_parameter"), UserParameter);
+
+		FString Json;
+		FString Error;
+		if (!FToolPlayMCPNiagaraSystemService::RemoveUserParameter(SystemAssetPath, UserParameter, Json, Error))
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Error);
+			return Result;
+		}
+
+		Result->SetBoolField(TEXT("ok"), true);
+		if (TSharedPtr<FJsonObject> Payload = ParseJsonObjectPayload(Json))
+		{
+			Result->SetObjectField(TEXT("system"), Payload.ToSharedRef());
+		}
+		else
+		{
+			Result->SetStringField(TEXT("system_json"), Json);
+		}
+		return Result;
+	}
+
 	if (Command == TEXT("configure_niagara_sprite_renderer"))
 	{
 		const TSharedPtr<FJsonObject>* Params = nullptr;
@@ -931,6 +967,118 @@ TSharedPtr<FJsonObject> FToolPlayMCPBridgeServer::HandleCommand(const TSharedPtr
 		else
 		{
 			Result->SetStringField(TEXT("system_json"), Json);
+		}
+		return Result;
+	}
+
+	if (Command == TEXT("list_niagara_renderers") || Command == TEXT("get_niagara_renderer_schema") || Command == TEXT("add_niagara_renderer") || Command == TEXT("remove_niagara_renderer") || Command == TEXT("set_niagara_renderer_property") ||
+		Command == TEXT("list_niagara_simulation_stages") || Command == TEXT("add_niagara_simulation_stage") || Command == TEXT("remove_niagara_simulation_stage") || Command == TEXT("move_niagara_simulation_stage") || Command == TEXT("set_niagara_simulation_stage_property"))
+	{
+		const TSharedPtr<FJsonObject>* Params = nullptr;
+		if (!Request->TryGetObjectField(TEXT("params"), Params) || !Params || !Params->IsValid())
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Missing params object."));
+			return Result;
+		}
+
+		FString SystemAssetPath;
+		FString EmitterAlias;
+		FString RendererType;
+		FString MeshAssetPath;
+		FString Property;
+		FString Value;
+		FString StageName;
+		int32 RendererIndex = 0;
+		int32 StageIndex = 0;
+		int32 TargetIndex = INDEX_NONE;
+		(*Params)->TryGetStringField(TEXT("system_asset_path"), SystemAssetPath);
+		(*Params)->TryGetStringField(TEXT("emitter"), EmitterAlias);
+		(*Params)->TryGetStringField(TEXT("renderer_type"), RendererType);
+		(*Params)->TryGetStringField(TEXT("mesh_asset_path"), MeshAssetPath);
+		(*Params)->TryGetStringField(TEXT("property"), Property);
+		(*Params)->TryGetStringField(TEXT("value"), Value);
+		(*Params)->TryGetStringField(TEXT("stage_name"), StageName);
+		(*Params)->TryGetNumberField(TEXT("renderer_index"), RendererIndex);
+		(*Params)->TryGetNumberField(TEXT("stage_index"), StageIndex);
+		(*Params)->TryGetNumberField(TEXT("target_index"), TargetIndex);
+
+		if (Value.IsEmpty())
+		{
+			const TSharedPtr<FJsonValue> ValueField = (*Params)->TryGetField(TEXT("value"));
+			if (ValueField.IsValid() && !ValueField->IsNull())
+			{
+				if (ValueField->Type == EJson::String)
+				{
+					Value = ValueField->AsString();
+				}
+				else
+				{
+					const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Value);
+					FJsonSerializer::Serialize(ValueField.ToSharedRef(), TEXT(""), Writer);
+				}
+			}
+		}
+
+		FString Json;
+		FString Error;
+		bool bSucceeded = false;
+		if (Command == TEXT("list_niagara_renderers"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::ListRenderers(SystemAssetPath, EmitterAlias, Json, Error);
+		}
+		else if (Command == TEXT("get_niagara_renderer_schema"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::GetRendererSchema(RendererType, Json, Error);
+		}
+		else if (Command == TEXT("add_niagara_renderer"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::AddRenderer(SystemAssetPath, EmitterAlias, RendererType, TargetIndex, MeshAssetPath, Json, Error);
+		}
+		else if (Command == TEXT("remove_niagara_renderer"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::RemoveRenderer(SystemAssetPath, EmitterAlias, RendererIndex, Json, Error);
+		}
+		else if (Command == TEXT("set_niagara_renderer_property"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::SetRendererProperty(SystemAssetPath, EmitterAlias, RendererIndex, Property, Value, Json, Error);
+		}
+		else if (Command == TEXT("list_niagara_simulation_stages"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::ListSimulationStages(SystemAssetPath, EmitterAlias, Json, Error);
+		}
+		else if (Command == TEXT("add_niagara_simulation_stage"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::AddSimulationStage(SystemAssetPath, EmitterAlias, StageName, TargetIndex, Json, Error);
+		}
+		else if (Command == TEXT("remove_niagara_simulation_stage"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::RemoveSimulationStage(SystemAssetPath, EmitterAlias, StageIndex, Json, Error);
+		}
+		else if (Command == TEXT("move_niagara_simulation_stage"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::MoveSimulationStage(SystemAssetPath, EmitterAlias, StageIndex, TargetIndex, Json, Error);
+		}
+		else if (Command == TEXT("set_niagara_simulation_stage_property"))
+		{
+			bSucceeded = FToolPlayMCPNiagaraSystemService::SetSimulationStageProperty(SystemAssetPath, EmitterAlias, StageIndex, Property, Value, Json, Error);
+		}
+
+		if (!bSucceeded)
+		{
+			Result->SetBoolField(TEXT("ok"), false);
+			Result->SetStringField(TEXT("error"), Error);
+			return Result;
+		}
+
+		Result->SetBoolField(TEXT("ok"), true);
+		if (TSharedPtr<FJsonObject> Payload = ParseJsonObjectPayload(Json))
+		{
+			Result->SetObjectField(TEXT("result"), Payload.ToSharedRef());
+		}
+		else
+		{
+			Result->SetStringField(TEXT("result_json"), Json);
 		}
 		return Result;
 	}

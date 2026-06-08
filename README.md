@@ -21,6 +21,10 @@ ArtB MCP Unreal is an experimental Unreal Editor plugin that exposes artist-orie
   <img src="Docs\pic\Cut1.png" alt="ToolPlayMCP screenshot" width="1080" />
 </p>
 
+<p align="center">
+  <img src="Docs\pic\Ripple.png" alt="ToolPlayMCP screenshot" width="1080" />
+</p>
+
 ## ⚠️ Experimental
 
 This is an early Editor-only tool intended for research, prototyping, and fast iteration. It is primarily developed and tested on UE 5.7. Niagara, Graph Editor, Blueprint, and other editor APIs can change between Unreal versions, so other versions may require small adaptations.
