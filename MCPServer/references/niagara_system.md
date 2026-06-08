@@ -112,9 +112,53 @@ Add the Niagara editor Minimal Emitter configured in `UNiagaraEditorSettings::De
 
 Set one exported emitter's simulation target to CPU or GPU. Accepted `sim_target` values include `CPU`, `CPUSim`, `GPU`, and `GPUComputeSim`. This edits emitter data, uses an editor transaction, marks the system dirty, and requests a compile. Re-export and run diagnostics after changing sim target because module support, renderer behavior, and data access can differ between CPU and GPU simulation.
 
-`niagara(action="configure_sprite_renderer", params={"system_asset_path":"...","emitter":"e0","renderer_index":0,"facing_mode":"FaceCamera","alignment":"VelocityAligned","pivot_u":0.5,"pivot_v":1.0})`
+`niagara(action="remove_user_parameter", params={"system_asset_path":"...","user_parameter":"User.SourceMesh"})`
 
-Configure a Sprite Renderer on an emitter. The tool currently supports `FacingMode`, `Alignment`, and `PivotInUVSpace`; it does not edit every renderer property. `renderer_index` indexes the emitter's exported `renderers` array and must point to a Sprite Renderer. Accepted facing values include `FaceCamera`, `FaceCameraPlane`, `CustomFacingVector`, `FaceCameraDistanceBlend`, and `Automatic`. Accepted alignment values include `Unaligned`, `VelocityAligned`, and `CustomAlignment`.
+Remove one exposed `User.*` parameter from a Niagara System. The parameter name may be passed as `SourceMesh` or `User.SourceMesh`. This does not automatically disconnect module input links that reference the same `User.*` name; export or inspect module input overrides first if you need to clean references.
+
+`niagara(action="list_renderers", params={"system_asset_path":"...","emitter":"e0"})`
+
+List renderer objects on an emitter. The response includes renderer index, class, compact type, and editable property snapshots. Use this before changing renderer type or properties; renderer indexes are emitter-local and can change after add/remove/reorder operations.
+
+`niagara(action="get_renderer_schema", params={"renderer_type":"mesh"})`
+
+Describe the safe editable fields for a renderer type. Supported `renderer_type` values currently include `sprite`, `mesh`, `ribbon`, `light`, and `component`. Do not guess renderer C++ property names; call this first and only pass properties returned by the schema.
+
+`niagara(action="add_renderer", params={"system_asset_path":"...","emitter":"e0","renderer_type":"mesh","target_index":-1,"mesh_asset_path":"/Engine/BasicShapes/Sphere.Sphere"})`
+
+Add a renderer to an emitter. `renderer_type` can be `sprite`, `mesh`, `ribbon`, `light`, or `component`. `mesh_asset_path` is optional and only applies to Mesh Renderer; it initializes the first mesh slot with a `UStaticMesh`. Re-export and call diagnostics after adding a renderer.
+
+`niagara(action="remove_renderer", params={"system_asset_path":"...","emitter":"e0","renderer_index":0})`
+
+Remove one renderer by index. This is a structural edit and should be followed by re-export.
+
+`niagara(action="set_renderer_property", params={"system_asset_path":"...","emitter":"e0","renderer_index":0,"property":"FacingMode","value":"Velocity"})`
+
+Set one exposed renderer property. For reflected fields, `value` uses Unreal import-text strings, such as enum names (`Velocity`, `FaceCamera`) or struct strings (`(X=0.5,Y=1.0)`). Special property `mesh_asset` sets the first Mesh Renderer mesh slot from a `UStaticMesh` asset path.
+
+`niagara(action="configure_sprite_renderer", params={...})`
+
+Compatibility wrapper for older clients. Prefer the unified renderer workflow above.
+
+`niagara(action="list_simulation_stages", params={"system_asset_path":"...","emitter":"e0"})`
+
+List simulation stages on an emitter, including index, class, name, enabled state, script usage id, and editable properties.
+
+`niagara(action="add_simulation_stage", params={"system_asset_path":"...","emitter":"e0","stage_name":"Advect","target_index":-1})`
+
+Add a generic simulation stage to an emitter and create the corresponding `ParticleSimulationStageScript` graph output. Simulation stages are structure-level emitter objects, not ordinary modules. Re-export after adding so the new stage stack appears with fresh aliases.
+
+`niagara(action="remove_simulation_stage", params={"system_asset_path":"...","emitter":"e0","stage_index":0})`
+
+Remove a simulation stage by index.
+
+`niagara(action="move_simulation_stage", params={"system_asset_path":"...","emitter":"e0","stage_index":0,"target_index":1})`
+
+Move a simulation stage to a new index.
+
+`niagara(action="set_simulation_stage_property", params={"system_asset_path":"...","emitter":"e0","stage_index":0,"property":"bEnabled","value":"False"})`
+
+Set one exposed simulation stage property. Use `list_simulation_stages` first; values use Unreal import-text strings for reflected fields.
 
 `niagara(action="add_module", params={"session_id":"...","target_stack":"...","script_asset_path":"...","target_index":-1,"suggested_name":""})`
 
@@ -155,6 +199,38 @@ Use `parameter_map_set` when the goal is to assign Niagara attributes such as `P
 For `custom_hlsl` nodes, every dynamic pin must be reflected in the node function signature. ToolPlayMCP refreshes this after `add_dynamic_pin`, but pin names still need to be valid HLSL identifiers such as `ColorOut`, `Fresnel`, or `FollowPosition`; do not use names with spaces, dots, or namespace separators on Custom HLSL pins. Namespaced Niagara attributes belong on `parameter_map_set` pins, not Custom HLSL pins.
 
 Custom HLSL text is inserted into Niagara-generated shader code. Do not paste a full function definition such as `void fresnel_calc(...) { ... }` into a Custom HLSL node unless the engine context explicitly supports that form. Prefer assignment/body snippets such as `ColorOut = ...; SizeOut = ...;`. After editing GPU Niagara code, run diagnostics and inspect both `compile_errors` and `shader_compile_errors`; GPU HLSL errors may reference `/Engine/Generated/NiagaraEmitterInstance.ush`.
+
+## Parameter Namespace Rules
+
+Niagara parameter namespaces are semantic, not decorative. Do not move a name between namespaces because it "sounds close".
+
+- Use `Particles.*` for per-particle attributes. Examples: `Particles.Age`, `Particles.NormalizedAge`, `Particles.Position`, `Particles.Velocity`, `Particles.Color`, `Particles.SpriteSize`, and `Particles.MeshScale`.
+- Use `Emitter.*` for emitter-scope values shared by the emitter.
+- Use `System.*` for system-scope values shared by the whole Niagara System.
+- Use `User.*` only for exposed user parameters intended to be set from the system/component/user.
+- Use `Engine.*` only for engine/script execution context values such as `Engine.DeltaTime` or execution metadata. `Engine.DeltaTime` works as a global context value, but `Engine.ExecutionIndex` is not a substitute for a particle attribute such as `Particles.Age` or `Particles.Position`.
+- Use `Owner.*` only for owner/component context values.
+- In module graphs and `parameter_map_set`, fully qualify particle attributes. Use `Particles.Age`, not `Age`; use `Particles.Position`, not `Engine.Position`, `Owner.Position`, or `System.Position`.
+- If the user asks for "particle age", "particle position", "per-particle color", or "each particle's velocity", choose the `Particles.*` namespace unless an exported module input explicitly says otherwise.
+- Stack context values adapt by script usage, but that does not mean `Engine`, `Owner`, or `System` can read per-particle attributes. For particle data, use `Particles.*` or an explicit module output/assignment that produces a particle attribute.
+- `ExecutionIndex` is an execution/thread index-style context value, not the same as particle ID, particle age, or particle array index. Do not use it to fetch particle attributes unless the module/API explicitly documents that workflow.
+- Do not read `Engine.ExecutionIndex` from Parameter Map with a parameter-map get node. That pattern is wrong for ToolPlayMCP-generated Niagara graphs and commonly produces missing/invalid values.
+- If a module needs execution index, use Niagara's built-in `Execution Index` graph node/function in the module graph, or expose a module input such as `Module.ExecutionIndex`/`Input.ExecutionIndex` and set it from the stack or an outer caller. Treat this as a computed script-context value, not a namespaced parameter-map variable.
+- If the goal is stable per-particle identity, ordering, or randomization, prefer explicit particle attributes such as `Particles.ID`, `Particles.UniqueID`, `Particles.RandomSeed`, or a custom `Particles.*` value when available. Do not substitute `Engine.ExecutionIndex` for those.
+
+Wrong:
+
+```text
+ParameterMapGet("Engine.ExecutionIndex") -> use as particle index
+```
+
+Right:
+
+```text
+Execution Index node/function -> local calculation
+Module input "ExecutionIndex" -> set externally when the stack/module API exposes it
+Particles.ID or custom Particles.* attribute -> stable particle identity/randomization
+```
 
 `remove_niagara_module(session_id, module)`
 
@@ -233,7 +309,8 @@ Supported `source` values:
 - Always export first; do not invent module aliases.
 - For from-scratch systems, prefer `niagara(action="add_default_emitter")` over searching for an emitter template.
 - Use `set_emitter_sim_target` for CPU/GPU simulation target changes instead of trying to patch module graphs.
-- Use `configure_sprite_renderer` for Sprite Renderer facing, alignment, and pivot. For other renderer properties, add a dedicated bridge action rather than guessing raw property writes.
+- Use the unified renderer workflow for renderer edits: `list_renderers`, `get_renderer_schema`, `add_renderer`, `remove_renderer`, and `set_renderer_property`. Do not use renderer-specific one-off tools unless maintaining an old client.
+- Use the simulation-stage workflow for stage edits: `list_simulation_stages`, `add_simulation_stage`, `remove_simulation_stage`, `move_simulation_stage`, and `set_simulation_stage_property`.
 - Always search before adding a Niagara module; do not invent script asset paths.
 - Treat `niagara(action="search_module")` as the Add-menu source of truth. If a module does not appear there, assume it is unavailable, hidden, obsolete, deprecated, or the wrong usage unless proven otherwise.
 - Read `inputs`, `outputs`, `writes`, `side_effects`, `input_value_kinds`, `critical_inputs`, `critical_static_switches`, `stack_requirements`, `required_followups`, `common_edits`, `pitfalls`, and `notes` in search results before adding or setting parameters.
