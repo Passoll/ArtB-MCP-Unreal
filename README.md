@@ -3,11 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.7%20Tested-orange)](https://www.unrealengine.com)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-yellow)](https://www.python.org)
-[![Status](https://img.shields.io/badge/Status-Experimental-red)](https://github.com/Passoll/ArtB-MCP-Unreal)
+[![Status]
 
 [中文](README.zh-CN.md)
 
 ArtB MCP Unreal is an experimental Unreal Editor plugin that exposes artist-oriented asset understanding, diagnostics, and editing workflows to AI agents. It currently focuses on compact export and mutation tools for Material graphs, Blueprint graphs, and Niagara systems/emitters/modules through a local MCP server.
+
+[Sample Video Bilibili](https://www.bilibili.com/video/BV12NEM62EiC)
 
 ## 🌟 Overview
 
